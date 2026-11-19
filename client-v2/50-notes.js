@@ -896,7 +896,25 @@ function NotesTabV2(props) {
   const notesPrefs = useMemo(function readNotesPrefs() {
     return v2ReadSettings()
   }, [])
-  const notesFontSize = notesPrefs.notesFontSize || 13.5
+  /* 笔记字号在编辑器内调整（不跟随全局界面字号，避免正文放大后行宽失衡） */
+  const [notesFontSize, setNotesFontSize] = useState(notesPrefs.notesFontSize || 13.5)
+  const NOTES_FONT_STEPS = [
+    { size: 13, label: '小' },
+    { size: 13.5, label: '标准' },
+    { size: 15, label: '大' },
+    { size: 17, label: '特大' },
+  ]
+  function notesFontLabel(size) {
+    const found = NOTES_FONT_STEPS.filter(function find(step) { return step.size === size })[0]
+    return found ? found.label : '标准'
+  }
+  function cycleNotesFontSize() {
+    const index = NOTES_FONT_STEPS.map(function size(step) { return step.size }).indexOf(notesFontSize)
+    const next = NOTES_FONT_STEPS[(index + 1) % NOTES_FONT_STEPS.length]
+    setNotesFontSize(next.size)
+    v2UpdateSettings({ notesFontSize: next.size })
+    runtime.toast('info', '笔记字号：' + next.label)
+  }
   const saveDelay = notesPrefs.notesAutosaveMs || (configData.options && configData.options.autosaveMs) || 800
   const workNodes = useMemo(function buildTree() { return v2NotesBuildTree(entries) }, [entries])
   const allDirs = useMemo(function buildDirs() {
@@ -2458,6 +2476,17 @@ function NotesTabV2(props) {
             option.label,
           )
         }),
+      ),
+      h(
+        'button',
+        {
+          type: 'button',
+          title: '笔记字号：' + notesFontLabel(notesFontSize) + '（点击切换）',
+          'aria-label': '切换笔记字号',
+          onClick: cycleNotesFontSize,
+          style: Object.assign(v2NotesIconBtnStyle({ width: 30, height: 28 }), { fontSize: 12, fontWeight: 600, letterSpacing: '0.02em' }),
+        },
+        'Aa',
       ),
       h('button', { type: 'button', title: '更多操作', onClick: openDocMenu, style: v2NotesIconBtnStyle({ width: 28, height: 28 }) }, h(V2Icon, { name: 'more', size: 15 })),
     )
