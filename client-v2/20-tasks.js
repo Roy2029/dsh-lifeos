@@ -127,6 +127,20 @@ function TaskArowV2(props) {
     }
   }, [editing])
 
+  /* 拖拽可能在行外松手（窗口/其它容器/取消），dragend 不一定经过本行；
+     统一监听 window 的 dragend/drop 清理插入线，避免蓝条残留。 */
+  useEffect(function clearDropHintOnDragEnd() {
+    function clear() {
+      setDropSide(function current(side) { return side ? '' : side })
+    }
+    window.addEventListener('dragend', clear, true)
+    window.addEventListener('drop', clear, true)
+    return function cleanup() {
+      window.removeEventListener('dragend', clear, true)
+      window.removeEventListener('drop', clear, true)
+    }
+  }, [])
+
   if (editing) {
     return h(
       'div',
@@ -258,8 +272,8 @@ function TaskArowV2(props) {
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             lineHeight: '18px',
-            /* 标题本身可点击进入编辑，悬停保持手型；只有输入框聚焦时才出现 I 字光标 */
-            cursor: 'pointer',
+            /* 标题可原地编辑：悬停显示 I 字光标，提示“点这里改名”，而非打开详情 */
+            cursor: 'text',
             userSelect: 'none',
           },
         }, task.title),
@@ -461,6 +475,9 @@ function TaskTabV2(props) {
   const dropGuardRef = useRef({ key: '', at: 0 })
   /* 自绘弹窗打开时接管 Esc，避免同时关闭详情面板 */
   const modalRef = useRef(false)
+  /* 详情标题的“已提交值”：state.detail 会随输入实时变化，
+     不能再用 task.title 判断是否有改动，否则永远判定为“未修改”而不落库。 */
+  const detailTitleRef = useRef({ id: null, title: '' })
   stateRef.current = state
   panesRef.current = panes
 
@@ -564,6 +581,18 @@ function TaskTabV2(props) {
   useEffect(function focusQuickAdd() {
     if (quickAddSignal > 0 && inputRef.current) inputRef.current.focus()
   }, [quickAddSignal])
+
+  /* 清单/分组拖拽在窗口外松手时 dragleave 不会触发，统一在 dragend 清空插入线 */
+  useEffect(function clearPaneDropHintsOnDragEnd() {
+    function clear() {
+      if (stateRef.current.dropList) update({ dropList: null })
+      if (stateRef.current.dropGroup) update({ dropGroup: null })
+    }
+    window.addEventListener('dragend', clear, true)
+    return function cleanup() {
+      window.removeEventListener('dragend', clear, true)
+    }
+  }, [])
 
   useEffect(function closeOnEscape() {
     function onKeyDown(event) {
@@ -673,6 +702,8 @@ function TaskTabV2(props) {
       return true
     } catch (error) {
       runtime.toast('error', '操作失败：' + errorText(error))
+      /* 失败时回滚乐观更新：拉回服务端真值，避免“前端成功、后端失败”的错位 */
+      await reload(false)
       return false
     } finally {
       lock.busy = false
@@ -1008,6 +1039,7 @@ function TaskTabV2(props) {
   }
 
   function openDetail(task) {
+    detailTitleRef.current = { id: task.id, title: task.title }
     update({ selectedId: task.id, detail: task })
   }
 
@@ -1306,6 +1338,8 @@ function TaskTabV2(props) {
 
   /* 间隙值法：排序值按 1024 递增，拖拽时只改被拖拽项一条记录；间隙耗尽才整组重排。 */
   const TASK_SORT_STEP = 1024
+  /* Host 对 sortOrder 的硬约束（routes-m6.js normalizeSortOrder）：0..1e9 的整数 */
+  const TASK_SORT_MAX = 1000000000
 
   function reorderWithinManual(dragged, orderedTasks, groupId, listId) {
     const patches = []
@@ -1351,8 +1385,16 @@ function TaskTabV2(props) {
       if (b - a > 1) sortOrder = Math.floor((a + b) / 2)
     }
     const movedGroup = v2TaskGroupId(dragged) !== groupId || v2TaskListId(dragged) !== listId
-    /* 间隙耗尽（相邻排序值差 ≤ 1）时整组重排为 0,1024,2048…；日常几乎不会触发 */
-    if (sortOrder === null) {
+    /* 候选值必须落在 Host 允许区间且不与相邻项撞值；
+       否则（例如拖到首位时 next-1024 为负、间隙耗尽、极端大值）整组重排 0,1024,2048… */
+    const candidateInvalid = sortOrder === null ||
+      !Number.isInteger(sortOrder) ||
+      sortOrder < 0 ||
+      sortOrder > TASK_SORT_MAX ||
+      (prev && sortOrder === Number(prev.sortOrder || prev.sort_order || 0)) ||
+      (next && sortOrder === Number(next.sortOrder || next.sort_order || 0))
+    if (candidateInvalid) {
+      /* 越界/撞值时全组重排为 0,1024,2048…；被拖项落在 insertAt 对应位置 */
       const full = ordered.slice()
       full.splice(insertAt, 0, dragged)
       reorderWithinManual(dragged, full, groupId, listId)
@@ -2818,12 +2860,31 @@ function TaskTabV2(props) {
           value: task.title,
           onChange: function onChange(e) { update({ detail: Object.assign({}, task, { title: e.target.value }) }) },
           onBlur: function onBlur(e) {
-            e.currentTarget.style.cursor = 'default'
             const value = String(e.target.value || '').trim()
-            if (value && value !== task.title) patchTask(task.id, task.rev, { title: value }, null)
+            const base = detailTitleRef.current.id === task.id ? detailTitleRef.current.title : task.title
+            if (!value) {
+              update({ detail: Object.assign({}, task, { title: base }) })
+              return
+            }
+            if (value === base) return
+            detailTitleRef.current = { id: task.id, title: value }
+            patchTask(task.id, task.rev, { title: value }, '任务已重命名').then(function settle(ok) {
+              if (!ok) detailTitleRef.current = { id: task.id, title: base }
+            })
           },
-          onFocus: function onFocus(e) { e.currentTarget.style.cursor = 'text' },
-          style: v2InputStyle({ flex: '1 1 auto', border: 'none', background: 'transparent', fontSize: v2fs(18), fontWeight: 600, color: V2_T.text.primary, padding: '2px 0', lineHeight: '26px', cursor: 'default' }),
+          onKeyDown: function onKeyDown(e) {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              e.currentTarget.blur()
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              const base = detailTitleRef.current.id === task.id ? detailTitleRef.current.title : task.title
+              e.currentTarget.value = base
+              update({ detail: Object.assign({}, task, { title: base }) })
+              e.currentTarget.blur()
+            }
+          },
+          style: v2InputStyle({ flex: '1 1 auto', border: 'none', background: 'transparent', fontSize: v2fs(18), fontWeight: 600, color: V2_T.text.primary, padding: '2px 0', lineHeight: '26px', cursor: 'text' }),
         }),
         h('button', {
           type: 'button',
