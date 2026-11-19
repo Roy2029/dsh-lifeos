@@ -142,3 +142,24 @@ test('client-v2：界面字号四档 / 笔记字号移入编辑器 / 拖拽插�
   assert.match(tasks, /Math\.floor\(\(a \+ b\) \/ 2\)/)
   assert.match(tasks, /index \+ \(after \? 1 : 0\)/)
 })
+
+test('client-v2：任务名 inline 光标/详情标题保存/拖拽排序稳定性', () => {
+  const tasks = readV2('20-tasks.js')
+  /* 列表标题可原地编辑：悬停显示 I 字光标 */
+  assert.match(tasks, /cursor: 'text'/)
+  /* 详情标题以“已提交值”为基准判断是否落库，避免实时 onChange 把对比对象改掉 */
+  assert.match(tasks, /const detailTitleRef = useRef\(\{ id: null, title: '' \}\)/)
+  assert.match(tasks, /detailTitleRef\.current\.title/)
+  assert.match(tasks, /任务已重命名/)
+  /* Host sortOrder 约束：0..1e9 整数，越界/撞值时整组重排而不是发非法 PATCH */
+  assert.match(tasks, /TASK_SORT_MAX = 1000000000/)
+  assert.match(tasks, /candidateInvalid/)
+  assert.match(tasks, /reorderWithinManual\(dragged, full, groupId, listId\)/)
+  /* 拖拽结束统一清理插入线（行内与清单/分组） */
+  assert.match(tasks, /clearDropHintOnDragEnd/)
+  assert.match(tasks, /clearPaneDropHintsOnDragEnd/)
+  assert.match(tasks, /window\.addEventListener\('dragend', clear, true\)/)
+  /* 乐观更新失败后回滚：catch 中重新拉取服务端真值 */
+  assert.match(tasks, /失败时回滚乐观更新/)
+  assert.match(tasks, /await reload\(false\)/)
+})
