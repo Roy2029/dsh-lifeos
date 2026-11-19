@@ -1,0 +1,10 @@
+# dsh-lifeos —— 挂载声明（M4a 验收完成）
+- insert:
+    - id: lifeos
+      name: dsh-lifeos
+      config:
+        enabled: true
+        timeZone: Asia/Shanghai
+        devMode: false
+        # M6 验收完成（2026-11-18 13:14 自动自检 7/7 全绿），关闭自检，避免每次加载重复跑。
+        clientSelfCheck: false

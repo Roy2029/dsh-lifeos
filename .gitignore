@@ -1,0 +1,31 @@
+# 运行时产物（每次启动/自检生成，含本机路径）
+runtime-*.json
+*.log
+*.bak
+*.bak-*
+
+# 依赖与临时目录
+node_modules/
+tmp/
+coverage/
+dist/
+
+# 验收证据（可能包含真实个人数据，不入库）
+test-artifacts/
+
+# 本地环境变量与密钥
+.env
+.env.*
+*.local
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# 笔记数据（若有人把笔记目录放在仓库内）
+notes/
+Notes/
