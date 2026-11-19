@@ -1,0 +1,65 @@
+{
+  "name": "dsh-lifeos",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "LifeOS — DSH 个人管理智能助理插件：任务 / 日历 / 习惯 / 笔记四合一工作区，本地优先",
+  "license": "MIT",
+  "author": "Roy",
+  "homepage": "https://github.com/Roy2029/dsh-lifeos#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Roy2029/dsh-lifeos.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Roy2029/dsh-lifeos/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "lifeos",
+    "todo",
+    "calendar",
+    "habit",
+    "notes",
+    "personal-management"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./agent": "./agent.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "agent.js",
+    "client.js",
+    "client-v2/",
+    "scripts/",
+    "src/",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node scripts/build-v2.mjs",
+    "test": "node --test --test-isolation=none --test-force-exit"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}
