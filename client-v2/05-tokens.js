@@ -127,12 +127,12 @@ function v2FocusRing(extra) {
 /* 段落级排版 token。 */
 function v2TextStyle(kind) {
   const map = {
-    caption: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '16px' },
-    meta: { fontSize: V2_T.font.meta, color: V2_T.text.tertiary, lineHeight: '18px' },
-    body: { fontSize: V2_T.font.body, color: V2_T.text.primary, lineHeight: '20px' },
-    sub: { fontSize: V2_T.font.body, color: V2_T.text.secondary, lineHeight: '20px' },
-    title: { fontSize: V2_T.font.title, color: V2_T.text.primary, fontWeight: 600, lineHeight: '22px' },
-    hero: { fontSize: V2_T.font.hero, color: V2_T.text.primary, fontWeight: 600, lineHeight: '26px' },
+    caption: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, lineHeight: '16px' },
+    meta: { fontSize: v2fs(V2_T.font.meta), color: V2_T.text.tertiary, lineHeight: '18px' },
+    body: { fontSize: v2fs(V2_T.font.body), color: V2_T.text.primary, lineHeight: '20px' },
+    sub: { fontSize: v2fs(V2_T.font.body), color: V2_T.text.secondary, lineHeight: '20px' },
+    title: { fontSize: v2fs(V2_T.font.title), color: V2_T.text.primary, fontWeight: 600, lineHeight: '22px' },
+    hero: { fontSize: v2fs(V2_T.font.hero), color: V2_T.text.primary, fontWeight: 600, lineHeight: '26px' },
   }
   return map[kind] || map.body
 }

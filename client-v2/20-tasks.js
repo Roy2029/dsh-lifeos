@@ -112,6 +112,8 @@ function TaskArowV2(props) {
   const carded = props.card === true
   const repeatRule = v2RepeatRuleOf(task)
   const [draft, setDraft] = useState(task.title)
+  /* 拖拽插入位置提示：'' | 'before' | 'after' */
+  const [dropSide, setDropSide] = useState('')
   const inputRef = useRef(null)
 
   useEffect(function syncDraft() {
@@ -153,7 +155,7 @@ function TaskArowV2(props) {
             props.onCancelEdit()
           }
         },
-        style: v2InputStyle({ flex: '1 1 auto', fontSize: 13, padding: '4px 8px', borderRadius: V2_T.radius.sm }),
+        style: v2InputStyle({ flex: '1 1 auto', fontSize: v2fs(13), padding: '4px 8px', borderRadius: V2_T.radius.sm }),
       }),
     )
   }
@@ -178,11 +180,23 @@ function TaskArowV2(props) {
         /* 行内 drop 优先，阻止冒泡到分组体/看板列，避免一次拖拽触发两次 mutation */
         e.stopPropagation()
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+        /* 命中测试：用 clientY 与行矩形中线比较（矩形含 padding/border），
+           鼠标所在半区即插入位置，不要求拖到行正中央。 */
+        const rect = e.currentTarget.getBoundingClientRect()
+        const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+        if (side !== dropSide) setDropSide(side)
+      },
+      onDragLeave: function onDragLeave(e) {
+        if (e.currentTarget.contains(e.relatedTarget)) return
+        if (dropSide) setDropSide('')
       },
       onDrop: function onDrop(e) {
         e.preventDefault()
         e.stopPropagation()
-        if (props.onDrop) props.onDrop(e, task)
+        const rect = e.currentTarget.getBoundingClientRect()
+        const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+        setDropSide('')
+        if (props.onDrop) props.onDrop(e, task, side)
       },
       onClick: function onOpen() { props.onOpen(task) },
       style: Object.assign(
@@ -194,6 +208,7 @@ function TaskArowV2(props) {
               borderRadius: V2_T.radius.sm,
             },
         {
+          position: 'relative',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -236,23 +251,26 @@ function TaskArowV2(props) {
             props.onStartEdit(task)
           },
           style: {
-            fontSize: 13.5,
+            fontSize: v2fs(13.5),
             color: v2TaskCompleted(task) ? V2_T.text.tertiary : V2_T.text.primary,
             textDecoration: v2TaskCompleted(task) ? 'line-through' : 'none',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             lineHeight: '18px',
+            /* 标题本身可点击进入编辑，悬停保持手型；只有输入框聚焦时才出现 I 字光标 */
+            cursor: 'pointer',
+            userSelect: 'none',
           },
         }, task.title),
         v2TaskPinned(task) ? h(V2Icon, { name: 'pin', size: 11, color: V2.faint }) : null,
         childCount > 0
-          ? h('span', { style: { fontSize: 11, color: V2_T.text.tertiary } }, '· ' + doneChild + '/' + childCount + ' 子任务')
+          ? h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary } }, '· ' + doneChild + '/' + childCount + ' 子任务')
           : null,
       ),
       h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, fontSize: 12, color: V2_T.text.tertiary, minHeight: 18 } },
+        { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, fontSize: v2fs(12), color: V2_T.text.tertiary, minHeight: 18 } },
         task.priority && task.priority !== 'none'
           ? h('span', {
               style: {
@@ -268,7 +286,7 @@ function TaskArowV2(props) {
           return h('span', {
             key: tag.id,
             style: {
-              fontSize: 11,
+              fontSize: v2fs(11),
               padding: '0 7px',
               borderRadius: V2_T.radius.pill,
               background: V2_T.surface.panel2,
@@ -283,7 +301,7 @@ function TaskArowV2(props) {
           ? h(
               'span',
               {
-                style: { display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 11, color: V2_T.text.tertiary, whiteSpace: 'nowrap' },
+                style: { display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: v2fs(11), color: V2_T.text.tertiary, whiteSpace: 'nowrap' },
                 title: '重复：' + v2RepeatLabel(repeatRule),
               },
               h(V2Icon, { name: 'repeat', size: 10 }),
@@ -309,6 +327,25 @@ function TaskArowV2(props) {
         style: v2IconBtnStyle(),
       }, h(V2Icon, { name: 'more', size: 14 })),
     ),
+    dropSide
+      ? h('div', {
+          key: 'drop-line',
+          'aria-hidden': 'true',
+          style: {
+            position: 'absolute',
+            left: 2,
+            right: 2,
+            top: dropSide === 'before' ? -1 : 'auto',
+            bottom: dropSide === 'after' ? -1 : 'auto',
+            height: 2,
+            borderRadius: 1,
+            background: V2_T.accent.base,
+            boxShadow: '0 0 0 1px ' + V2_T.accent.line,
+            pointerEvents: 'none',
+            zIndex: 2,
+          },
+        })
+      : null,
   )
 }
 
@@ -817,15 +854,15 @@ function TaskTabV2(props) {
           background: V2_T.surface.shell,
         },
       },
-      h('span', { style: { fontSize: 12, color: V2_T.text.secondary } }, count ? '已选 ' + count + ' 项' : '点击任务以多选'),
+      h('span', { style: { fontSize: v2fs(12), color: V2_T.text.secondary } }, count ? '已选 ' + count + ' 项' : '点击任务以多选'),
       h('div', { style: { flex: '1 1 auto' } }),
-      h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', { fontSize: 11, height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '移入清单'),
-      h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', { fontSize: 11, height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '添加标签'),
-      h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', { fontSize: 11, height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, color: V2_T.status.danger }) }, '删除'),
+      h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '移入清单'),
+      h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '添加标签'),
+      h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, color: V2_T.status.danger }) }, '删除'),
       h('button', {
         type: 'button',
         onClick: function onClick() { update({ selectionMode: false, selectedIds: [] }) },
-        style: v2BtnStyle('ghost', { fontSize: 11, height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm }),
+        style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm }),
       }, '取消'),
     )
   }
@@ -1090,7 +1127,7 @@ function TaskTabV2(props) {
       btn.style.border = 'none'
       btn.style.color = item.danger ? V2.danger : V2.text
       btn.style.fontFamily = COLORS.fontFamily
-      btn.style.fontSize = '12px'
+      btn.style.fontSize = v2fs(12)
       btn.style.padding = '7px 10px'
       btn.style.borderRadius = V2_T.radius.sm + 'px'
       btn.style.cursor = 'pointer'
@@ -1179,22 +1216,31 @@ function TaskTabV2(props) {
     }, '已新建分组「' + name + '」')
   }
 
-  /* 清单拖拽排序：把 draggedId 插到 targetId 之前，提交完整顺序 */
-  function reorderListTo(draggedId, targetId) {
+  /* 清单拖拽排序：把 draggedId 插到 targetId 前/后，乐观更新本地顺序并提交完整顺序 */
+  function reorderListTo(draggedId, targetId, after) {
     if (!draggedId || !targetId || draggedId === targetId) return
     const ids = visibleLists().map(function id(list) { return list.id })
     const from = ids.indexOf(draggedId)
     if (from < 0 || ids.indexOf(targetId) < 0) return
     ids.splice(from, 1)
-    const insertAt = ids.indexOf(targetId)
-    ids.splice(insertAt < 0 ? ids.length : insertAt, 0, draggedId)
+    const targetIndex = ids.indexOf(targetId)
+    ids.splice(targetIndex < 0 ? ids.length : targetIndex + (after ? 1 : 0), 0, draggedId)
+    /* 乐观更新：先按新顺序重排本地清单数组，界面立即响应；落库期间不阻塞交互 */
+    const byId = {}
+    state.lists.forEach(function each(list) { byId[list.id] = list })
+    const queue = ids.map(function pick(id) { return byId[id] }).filter(Boolean)
+    let cursor = 0
+    const optimistic = state.lists.map(function each(list) {
+      return ids.indexOf(list.id) >= 0 ? queue[cursor++] : list
+    })
+    update({ lists: optimistic, dropList: null })
     runMutation(async function doReorder() {
       await apiRequest('/lists/reorder', { method: 'POST', body: JSON.stringify({ ids: ids }) })
     }, '已调整清单顺序')
   }
 
   /* 分组拖拽排序：只在当前清单内重排 */
-  function reorderGroupTo(draggedId, targetId) {
+  function reorderGroupTo(draggedId, targetId, after) {
     const listId = state.scope.kind === 'list' ? state.scope.id : null
     if (!listId || !draggedId || !targetId || draggedId === targetId) return
     const ids = state.groups
@@ -1203,8 +1249,16 @@ function TaskTabV2(props) {
     const from = ids.indexOf(draggedId)
     if (from < 0 || ids.indexOf(targetId) < 0) return
     ids.splice(from, 1)
-    const insertAt = ids.indexOf(targetId)
-    ids.splice(insertAt < 0 ? ids.length : insertAt, 0, draggedId)
+    const targetIndex = ids.indexOf(targetId)
+    ids.splice(targetIndex < 0 ? ids.length : targetIndex + (after ? 1 : 0), 0, draggedId)
+    const byId = {}
+    state.groups.forEach(function each(group) { byId[group.id] = group })
+    const queue = ids.map(function pick(id) { return byId[id] }).filter(Boolean)
+    let cursor = 0
+    const optimistic = state.groups.map(function each(group) {
+      return ids.indexOf(group.id) >= 0 ? queue[cursor++] : group
+    })
+    update({ groups: optimistic, dropGroup: null })
     runMutation(async function doReorder() {
       await apiRequest('/groups/reorder', { method: 'POST', body: JSON.stringify({ ids: ids }) })
     }, '已调整分组顺序')
@@ -1223,7 +1277,9 @@ function TaskTabV2(props) {
     e.stopPropagation()
     const draggedId = window.__lifeosV2DragListId
     window.__lifeosV2DragListId = null
-    reorderListTo(draggedId, list.id)
+    const rect = e.currentTarget.getBoundingClientRect()
+    const after = e.clientY > rect.top + rect.height / 2
+    reorderListTo(draggedId, list.id, after)
   }
 
   function startGroupDrag(e, group) {
@@ -1239,17 +1295,22 @@ function TaskTabV2(props) {
     e.stopPropagation()
     const draggedId = window.__lifeosV2DragGroupId
     window.__lifeosV2DragGroupId = null
-    reorderGroupTo(draggedId, group.id)
+    const rect = e.currentTarget.getBoundingClientRect()
+    const after = e.clientY > rect.top + rect.height / 2
+    reorderGroupTo(draggedId, group.id, after)
   }
 
   function openGroupAdd(listId, groupId) {
     update({ groupAdd: { listId: listId, groupId: groupId || null }, groupAddText: '' })
   }
 
+  /* 间隙值法：排序值按 1024 递增，拖拽时只改被拖拽项一条记录；间隙耗尽才整组重排。 */
+  const TASK_SORT_STEP = 1024
+
   function reorderWithinManual(dragged, orderedTasks, groupId, listId) {
     const patches = []
     orderedTasks.forEach(function each(task, index) {
-      const sortOrder = index * 10
+      const sortOrder = index * TASK_SORT_STEP
       const movedGroup = task.id === dragged.id && (v2TaskGroupId(dragged) !== groupId || v2TaskListId(dragged) !== listId)
       if (movedGroup || Number(task.sortOrder) !== sortOrder) {
         patches.push({ task: task, sortOrder: sortOrder, move: movedGroup })
@@ -1263,7 +1324,7 @@ function TaskTabV2(props) {
     }, '已调整排序')
   }
 
-  function reorderTaskRelative(draggedId, targetId) {
+  function reorderTaskRelative(draggedId, targetId, after) {
     if (!draggedId || !targetId || draggedId === targetId) return
     const dragged = state.tasks.filter(function f(t) { return t.id === draggedId })[0]
     const target = state.tasks.filter(function f(t) { return t.id === targetId })[0]
@@ -1275,9 +1336,53 @@ function TaskTabV2(props) {
     })
     const ordered = v2SortTasks(bucket.slice(), 'custom').filter(function f(t) { return t.id !== dragged.id })
     const index = ordered.findIndex(function f(t) { return t.id === target.id })
-    if (index < 0) ordered.push(dragged)
-    else ordered.splice(index, 0, dragged)
-    reorderWithinManual(dragged, ordered, groupId, listId)
+    if (index < 0) return
+    const insertAt = Math.max(0, Math.min(ordered.length, index + (after ? 1 : 0)))
+    const prev = ordered[insertAt - 1]
+    const next = ordered[insertAt]
+    const step = TASK_SORT_STEP
+    let sortOrder = null
+    if (!prev && !next) sortOrder = 0
+    else if (!prev) sortOrder = Number(next.sortOrder || next.sort_order || 0) - step
+    else if (!next) sortOrder = Number(prev.sortOrder || prev.sort_order || 0) + step
+    else {
+      const a = Number(prev.sortOrder || prev.sort_order || 0)
+      const b = Number(next.sortOrder || next.sort_order || 0)
+      if (b - a > 1) sortOrder = Math.floor((a + b) / 2)
+    }
+    const movedGroup = v2TaskGroupId(dragged) !== groupId || v2TaskListId(dragged) !== listId
+    /* 间隙耗尽（相邻排序值差 ≤ 1）时整组重排为 0,1024,2048…；日常几乎不会触发 */
+    if (sortOrder === null) {
+      const full = ordered.slice()
+      full.splice(insertAt, 0, dragged)
+      reorderWithinManual(dragged, full, groupId, listId)
+      return
+    }
+    if (opLockRef.current.busy) return
+    /* 乐观更新：本地先改顺序，拖拽松手立即看到结果；落库只 PATCH 这一条，异步刷新兜底 */
+    const optimistic = state.tasks.map(function patchLocal(nextTask) {
+      if (nextTask.id !== draggedId) return nextTask
+      return Object.assign({}, nextTask, { sortOrder: sortOrder, groupId: groupId, listId: listId })
+    })
+    update({ tasks: optimistic })
+    runMutation(async function doMove() {
+      const body = { sortOrder: sortOrder, expectedRev: dragged.rev }
+      if (movedGroup) {
+        body.groupId = groupId
+        body.listId = listId
+      }
+      try {
+        await apiRequest('/tasks/' + encodeURIComponent(draggedId), { method: 'PATCH', body: JSON.stringify(body) })
+      } catch (error) {
+        if (!v2IsConflictError(error)) throw error
+        /* rev 过期：刷新拿到最新版本后重试一次 */
+        const fresh = await reload(false)
+        const current = v2FindTaskById((fresh && fresh.tasks) || [], draggedId)
+        if (!current) throw error
+        body.expectedRev = current.rev
+        await apiRequest('/tasks/' + encodeURIComponent(draggedId), { method: 'PATCH', body: JSON.stringify(body) })
+      }
+    }, null)
   }
 
   function appendTaskToGroup(draggedId, groupId, listId) {
@@ -1871,7 +1976,7 @@ function TaskTabV2(props) {
             background: active ? V2_T.accent.soft : 'transparent',
             color: active ? V2_T.accent.base : V2_T.text.secondary,
             fontFamily: COLORS.fontFamily,
-            fontSize: 13,
+            fontSize: v2fs(13),
             lineHeight: '18px',
             cursor: 'pointer',
             textAlign: 'left',
@@ -1880,7 +1985,7 @@ function TaskTabV2(props) {
         },
         h(V2Icon, { name: icon || 'layers', size: 14 }),
         h('span', { style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
-        typeof count === 'number' && count > 0 ? h('span', { style: { fontSize: 11, color: V2_T.text.tertiary, flex: '0 0 auto' } }, String(count)) : null,
+        typeof count === 'number' && count > 0 ? h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, flex: '0 0 auto' } }, String(count)) : null,
       )
     }
 
@@ -1920,7 +2025,7 @@ function TaskTabV2(props) {
               color: V2.faint,
               cursor: 'pointer',
               writingMode: 'vertical-rl',
-              fontSize: 11,
+              fontSize: v2fs(11),
               padding: '6px 2px',
               fontFamily: COLORS.fontFamily,
             },
@@ -1946,7 +2051,7 @@ function TaskTabV2(props) {
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 12px 8px' } },
-        h('span', { style: { fontSize: 12, fontWeight: 600, color: V2_T.text.secondary, letterSpacing: '0.02em' } }, '任务'),
+        h('span', { style: { fontSize: v2fs(12), fontWeight: 600, color: V2_T.text.secondary, letterSpacing: '0.02em' } }, '任务'),
         narrow
           ? null
           : h('button', {
@@ -1965,7 +2070,7 @@ function TaskTabV2(props) {
         h(
           'div',
           { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: V2_T.font.caption, fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '清单'),
+          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '清单'),
           h('button', {
             type: 'button',
             onClick: function onClick() { update({ newListOpen: true, newListName: '' }) },
@@ -1986,7 +2091,7 @@ function TaskTabV2(props) {
                   if (e.key === 'Escape') update({ newListOpen: false })
                 },
                 style: v2InputStyle({
-                  fontSize: 12,
+                  fontSize: v2fs(12),
                   padding: '4px 8px',
                   height: 30,
                   background: V2_T.surface.input,
@@ -2016,7 +2121,7 @@ function TaskTabV2(props) {
                   }
                 },
                 style: v2InputStyle({
-                  fontSize: 12,
+                  fontSize: v2fs(12),
                   padding: '4px 8px',
                   height: 30,
                   background: V2_T.surface.input,
@@ -2026,6 +2131,7 @@ function TaskTabV2(props) {
               }),
             )
           }
+          const listDrop = state.dropList && state.dropList.id === list.id ? state.dropList.side : ''
           return h(
             'div',
             {
@@ -2033,16 +2139,49 @@ function TaskTabV2(props) {
               draggable: true,
               title: '拖拽调整清单顺序',
               onDragStart: function onDragStart(e) { startListDrag(e, list) },
-              onDragEnd: function onDragEnd() { window.__lifeosV2DragListId = null },
+              onDragEnd: function onDragEnd() {
+                window.__lifeosV2DragListId = null
+                if (state.dropList) update({ dropList: null })
+              },
               onDragOver: function onDragOver(e) {
                 if (!window.__lifeosV2DragListId) return
                 e.preventDefault()
                 e.stopPropagation()
                 if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+                /* 命中测试：与行矩形中线比较，鼠标在上半区插到前面、下半区插到后面 */
+                const rect = e.currentTarget.getBoundingClientRect()
+                const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                const current = state.dropList
+                if (!current || current.id !== list.id || current.side !== side) {
+                  update({ dropList: { id: list.id, side: side } })
+                }
+              },
+              onDragLeave: function onDragLeave(e) {
+                if (e.currentTarget.contains(e.relatedTarget)) return
+                if (state.dropList && state.dropList.id === list.id) update({ dropList: null })
               },
               onDrop: function onDrop(e) { dropListReorder(e, list) },
-              style: { display: 'flex', alignItems: 'center' },
+              style: { display: 'flex', alignItems: 'center', position: 'relative' },
             },
+            listDrop
+              ? h('div', {
+                  key: 'list-drop-line',
+                  'aria-hidden': 'true',
+                  style: {
+                    position: 'absolute',
+                    left: 8,
+                    right: 8,
+                    top: listDrop === 'before' ? -1 : 'auto',
+                    bottom: listDrop === 'after' ? -1 : 'auto',
+                    height: 2,
+                    borderRadius: 1,
+                    background: V2_T.accent.base,
+                    boxShadow: '0 0 0 1px ' + V2_T.accent.line,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  },
+                })
+              : null,
             h('div', { style: { flex: '1 1 auto', minWidth: 0 } }, navItem({ kind: 'list', id: list.id }, list.name, count, 'layers')),
             h('button', {
               type: 'button',
@@ -2055,14 +2194,14 @@ function TaskTabV2(props) {
         h(
           'div',
           { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: V2_T.font.caption, fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '过滤器'),
+          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '过滤器'),
         ),
         navItem({ kind: 'filter', id: 'high', label: '本周高优先级' }, '本周高优先级', scopeCountOf({ kind: 'filter', id: 'high', label: '本周高优先级' }), 'filter'),
         navItem({ kind: 'filter', id: 'meeting', label: '会议相关' }, '会议相关', scopeCountOf({ kind: 'filter', id: 'meeting', label: '会议相关' }), 'filter'),
         h(
           'div',
           { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: V2_T.font.caption, fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '标签'),
+          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '标签'),
           h('button', {
             type: 'button',
             title: '编辑标签',
@@ -2075,11 +2214,11 @@ function TaskTabV2(props) {
               const count = scopeCountOf({ kind: 'tag', id: tag.id })
               return navItem({ kind: 'tag', id: tag.id }, tag.name, count, 'tag')
             })
-          : h('div', { style: { padding: '2px 10px', fontSize: 11, color: V2.faint } }, '暂无标签'),
+          : h('div', { style: { padding: '2px 10px', fontSize: v2fs(11), color: V2.faint } }, '暂无标签'),
         h(
           'div',
           { style: { marginTop: 12, padding: '0 10px 4px' } },
-          h('span', { style: { fontSize: V2_T.font.caption, fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '收纳区'),
+          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '收纳区'),
         ),
         navItem({ kind: 'done' }, '已完成', state.done.length, 'done'),
         navItem({ kind: 'trash' }, '垃圾桶', state.trash.length, 'trash'),
@@ -2146,6 +2285,7 @@ function TaskTabV2(props) {
       buckets.map(function renderBucket(bucket) {
         const key = scopeKey(state.scope) + ':' + bucket.id
         const collapsed = state.collapsed[key] === true
+        const groupDrop = state.dropGroup && state.dropGroup.id === bucket.id ? state.dropGroup.side : ''
         return h(
           'div',
           { key: bucket.id || 'ungrouped', style: v2CardStyle({ marginBottom: 12, overflow: 'hidden' }) },
@@ -2161,17 +2301,31 @@ function TaskTabV2(props) {
                     startGroupDrag(e, { id: bucket.id })
                   }
                 : null,
-              onDragEnd: function onDragEnd() { window.__lifeosV2DragGroupId = null },
+              onDragEnd: function onDragEnd() {
+                window.__lifeosV2DragGroupId = null
+                if (state.dropGroup) update({ dropGroup: null })
+              },
               onDragOver: function onDragOver(e) {
                 if (!window.__lifeosV2DragGroupId) return
                 e.preventDefault()
                 e.stopPropagation()
                 if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+                const rect = e.currentTarget.getBoundingClientRect()
+                const side = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                const current = state.dropGroup
+                if (!current || current.id !== bucket.id || current.side !== side) {
+                  update({ dropGroup: { id: bucket.id, side: side } })
+                }
+              },
+              onDragLeave: function onDragLeave(e) {
+                if (e.currentTarget.contains(e.relatedTarget)) return
+                if (state.dropGroup && state.dropGroup.id === bucket.id) update({ dropGroup: null })
               },
               onDrop: bucket.id
                 ? function onDrop(e) { dropGroupReorder(e, { id: bucket.id }) }
                 : null,
               style: {
+                position: 'relative',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
@@ -2180,6 +2334,25 @@ function TaskTabV2(props) {
                 borderBottom: collapsed ? 'none' : '1px solid ' + V2_T.border.subtle,
               },
             },
+            groupDrop
+              ? h('div', {
+                  key: 'group-drop-line',
+                  'aria-hidden': 'true',
+                  style: {
+                    position: 'absolute',
+                    left: 8,
+                    right: 8,
+                    top: groupDrop === 'before' ? 0 : 'auto',
+                    bottom: groupDrop === 'after' ? 0 : 'auto',
+                    height: 2,
+                    borderRadius: 1,
+                    background: V2_T.accent.base,
+                    boxShadow: '0 0 0 1px ' + V2_T.accent.line,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  },
+                })
+              : null,
             h('button', {
               type: 'button',
               onClick: function onClick() {
@@ -2202,10 +2375,10 @@ function TaskTabV2(props) {
                       update({ renamingGroupId: null })
                     }
                   },
-                  style: v2InputStyle({ fontSize: 12, padding: '3px 8px', width: 150, height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+                  style: v2InputStyle({ fontSize: v2fs(12), padding: '3px 8px', width: 150, height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
                 })
-              : h('span', { style: { fontSize: 13, fontWeight: 600, color: V2_T.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, bucket.name),
-            h('span', { style: { fontSize: 11, color: V2_T.text.tertiary } }, String(bucket.tasks.length)),
+              : h('span', { style: { fontSize: v2fs(13), fontWeight: 600, color: V2_T.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, bucket.name),
+            h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary } }, String(bucket.tasks.length)),
             h('div', { style: { flex: '1 1 auto' } }),
             bucket.id
               ? h('button', {
@@ -2245,7 +2418,7 @@ function TaskTabV2(props) {
                       update({ groupAdd: null })
                     }
                   },
-                  style: v2InputStyle({ fontSize: 12, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+                  style: v2InputStyle({ fontSize: v2fs(12), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
                 }),
               )
             : null,
@@ -2264,13 +2437,14 @@ function TaskTabV2(props) {
                     clearDragPayload()
                     appendTaskToGroup(dragged.taskId, bucket.id || null, listId)
                   },
-                  style: { minHeight: 6, padding: '4px 6px 6px' },
+                  /* 空分组也要有足够大的放置区（≥56px），否则拖拽几乎无法命中 */
+                  style: { minHeight: 56, padding: '4px 6px 6px' },
                 },
                 bucket.tasks.length
                   ? bucket.tasks.map(function renderTask(task) { return renderTaskRow(task) })
                   : h(
                       'div',
-                      { style: { padding: '6px 10px 8px', fontSize: 11, color: V2_T.text.tertiary } },
+                      { style: { padding: '6px 10px 8px', fontSize: v2fs(11), color: V2_T.text.tertiary } },
                       '暂无任务',
                     ),
               ),
@@ -2338,8 +2512,8 @@ function TaskTabV2(props) {
               },
               style: v2IconBtnStyle({ width: 20, height: 20 }),
             }, h(V2Icon, { name: collapsed ? 'chev' : 'chevD', size: 12 })),
-            h('span', { style: { fontSize: 13, fontWeight: 600, color: bucket.id === 'overdue' ? V2_T.status.danger : V2_T.text.primary } }, bucket.name),
-            h('span', { style: { fontSize: 11, color: V2_T.text.tertiary } }, String(bucket.tasks.length)),
+            h('span', { style: { fontSize: v2fs(13), fontWeight: 600, color: bucket.id === 'overdue' ? V2_T.status.danger : V2_T.text.primary } }, bucket.name),
+            h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary } }, String(bucket.tasks.length)),
           ),
           collapsed ? null : h(
             'div',
@@ -2394,8 +2568,8 @@ function TaskTabV2(props) {
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px 10px' } },
-            h('span', { style: { fontSize: 13, fontWeight: 600, color: V2_T.text.primary } }, bucket.name),
-            h('span', { style: { fontSize: 11, color: V2_T.text.tertiary } }, String(bucket.tasks.length)),
+            h('span', { style: { fontSize: v2fs(13), fontWeight: 600, color: V2_T.text.primary } }, bucket.name),
+            h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary } }, String(bucket.tasks.length)),
           ),
           bucket.tasks.map(function renderTask(task) { return renderTaskRow(task, 0, true) }),
         )
@@ -2447,13 +2621,13 @@ function TaskTabV2(props) {
           /* ignore */
         }
       },
-      onDrop: function onDrop(event, target) {
+      onDrop: function onDrop(event, target, side) {
         if (event && event.stopPropagation) event.stopPropagation()
         const draggedId = window.__lifeosV2DragTaskId
         if (!draggedId || draggedId === target.id) return
         if (!acceptDrop('row:' + target.id + ':' + draggedId)) return
         clearDragPayload()
-        reorderTaskRelative(draggedId, target.id)
+        reorderTaskRelative(draggedId, target.id, side === 'after')
       },
     })
     if (!children.length || level >= 2) return row
@@ -2518,11 +2692,11 @@ function TaskTabV2(props) {
               update({ quickAdd: '', quickAddHint: '' })
             }
           },
-          style: v2InputStyle({ flex: '1 1 auto', border: 'none', background: 'transparent', fontSize: 13, padding: 0, height: 22 }),
+          style: v2InputStyle({ flex: '1 1 auto', border: 'none', background: 'transparent', fontSize: v2fs(13), padding: 0, height: 22 }),
         }),
         state.quickAddHint
-          ? h('span', { style: { fontSize: 11, color: V2_T.accent.base, whiteSpace: 'nowrap' } }, state.quickAddHint)
-          : h('span', { style: { fontSize: 11, color: V2_T.text.tertiary, whiteSpace: 'nowrap' } }, 'N 聚焦'),
+          ? h('span', { style: { fontSize: v2fs(11), color: V2_T.accent.base, whiteSpace: 'nowrap' } }, state.quickAddHint)
+          : h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, whiteSpace: 'nowrap' } }, 'N 聚焦'),
       ),
     )
   }
@@ -2542,8 +2716,8 @@ function TaskTabV2(props) {
           h(
             'div',
             { style: { display: 'flex', alignItems: 'baseline', gap: 8 } },
-            h('h3', { style: { margin: 0, fontSize: 20, fontWeight: 600, color: V2_T.text.primary, lineHeight: '26px', letterSpacing: '-0.01em' } }, scopeTitleOf(state.scope)),
-            h('span', { style: { fontSize: 12, color: V2_T.text.tertiary, fontWeight: 500 } }, String(count) + ' 项'),
+            h('h3', { style: { margin: 0, fontSize: v2fs(20), fontWeight: 600, color: V2_T.text.primary, lineHeight: '26px', letterSpacing: '-0.01em' } }, scopeTitleOf(state.scope)),
+            h('span', { style: { fontSize: v2fs(12), color: V2_T.text.tertiary, fontWeight: 500 } }, String(count) + ' 项'),
           ),
         ),
         h(
@@ -2644,10 +2818,12 @@ function TaskTabV2(props) {
           value: task.title,
           onChange: function onChange(e) { update({ detail: Object.assign({}, task, { title: e.target.value }) }) },
           onBlur: function onBlur(e) {
+            e.currentTarget.style.cursor = 'default'
             const value = String(e.target.value || '').trim()
             if (value && value !== task.title) patchTask(task.id, task.rev, { title: value }, null)
           },
-          style: v2InputStyle({ flex: '1 1 auto', border: 'none', background: 'transparent', fontSize: 18, fontWeight: 600, color: V2_T.text.primary, padding: '2px 0', lineHeight: '26px' }),
+          onFocus: function onFocus(e) { e.currentTarget.style.cursor = 'text' },
+          style: v2InputStyle({ flex: '1 1 auto', border: 'none', background: 'transparent', fontSize: v2fs(18), fontWeight: 600, color: V2_T.text.primary, padding: '2px 0', lineHeight: '26px', cursor: 'default' }),
         }),
         h('button', {
           type: 'button',
@@ -2660,15 +2836,15 @@ function TaskTabV2(props) {
         { style: { flex: '1 1 auto', overflowY: 'auto', padding: '16px', minHeight: 0 } },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 2px 12px', fontSize: 12, color: V2_T.text.secondary } },
+          { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 2px 12px', fontSize: v2fs(12), color: V2_T.text.secondary } },
           h(V2Icon, { name: 'calendar', size: 13 }),
           h('span', null, v2TaskDateText(task) || '无日期'),
           h('span', { style: { marginLeft: 'auto' } }, listNameOf(listId)),
         ),
         h(
           'div',
-          { style: Object.assign(v2CardStyle({ padding: '6px 12px', marginBottom: 12 }), { display: 'grid', gridTemplateColumns: '76px 1fr', columnGap: 8, rowGap: 0, gridAutoRows: 'minmax(34px, auto)', alignItems: 'center', fontSize: 12 }) },
-          h('span', { style: { color: V2_T.text.tertiary, fontSize: 12 } }, '日期'),
+          { style: Object.assign(v2CardStyle({ padding: '6px 12px', marginBottom: 12 }), { display: 'grid', gridTemplateColumns: '76px 1fr', columnGap: 8, rowGap: 0, gridAutoRows: 'minmax(34px, auto)', alignItems: 'center', fontSize: v2fs(12) }) },
+          h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '日期'),
           h('input', {
             type: 'date',
             value: v2TaskDateKey(task) || '',
@@ -2680,9 +2856,9 @@ function TaskTabV2(props) {
                 scheduledEndAt: null,
               }, null)
             },
-            style: v2InputStyle({ fontSize: 13, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+            style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
           }),
-          h('span', { style: { color: V2_T.text.tertiary, fontSize: 12 } }, '时间'),
+          h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '时间'),
           h(
             'div',
             { style: { display: 'flex', gap: 4 } },
@@ -2708,7 +2884,7 @@ function TaskTabV2(props) {
                   scheduledEndAt: end,
                 }, null)
               },
-              style: v2InputStyle({ fontSize: 13, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
             }),
             h('input', {
               type: 'time',
@@ -2734,26 +2910,26 @@ function TaskTabV2(props) {
                   scheduledEndAt: end,
                 }, null)
               },
-              style: v2InputStyle({ fontSize: 13, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
             }),
           ),
-          h('span', { style: { color: V2_T.text.tertiary, fontSize: 12 } }, '优先级'),
+          h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '优先级'),
           h(
             'select',
             {
               value: task.priority || 'none',
               onChange: function onChange(e) { patchTask(task.id, task.rev, { priority: e.target.value }, null) },
-              style: v2InputStyle({ fontSize: 13, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
             },
             V2_PRIORITY_ITEMS.map(function map(item) { return h('option', { key: item.id, value: item.id }, item.label) }),
           ),
-          h('span', { style: { color: V2_T.text.tertiary, fontSize: 12 } }, '重复'),
+          h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '重复'),
           (function renderRepeat() {
             const rule = v2RepeatRuleOf(task)
             const kind = rule ? rule.kind : 'none'
             function chipStyle(active) {
               return v2BtnStyle('ghost', {
-                fontSize: 11,
+                fontSize: v2fs(11),
                 lineHeight: '16px',
                 padding: '3px 10px',
                 borderRadius: V2_T.radius.pill,
@@ -2780,7 +2956,7 @@ function TaskTabV2(props) {
                     style: chipStyle(kind === item.id),
                   }, item.label)
                 }),
-                h('span', { style: { fontSize: 11, color: V2_T.text.tertiary, marginLeft: 2 } }, v2RepeatLabel(rule)),
+                h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, marginLeft: 2 } }, v2RepeatLabel(rule)),
               ),
             ]
             if (kind === 'weekly') {
@@ -2806,7 +2982,7 @@ function TaskTabV2(props) {
               parts.push(
                 h(
                   'div',
-                  { key: 'monthday', style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: V2_T.text.secondary } },
+                  { key: 'monthday', style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: v2fs(12), color: V2_T.text.secondary } },
                   h('span', null, '每月'),
                   h('input', {
                     key: 'monthly-' + task.id + '-' + (rule && rule.kind === 'monthly' ? rule.day : 'none'),
@@ -2821,7 +2997,7 @@ function TaskTabV2(props) {
                         setRepeatMonthDay(task, e.target.value)
                       }
                     },
-                    style: v2InputStyle({ width: 60, fontSize: 12, padding: '3px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+                    style: v2InputStyle({ width: 60, fontSize: v2fs(12), padding: '3px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
                   }),
                   h('span', null, '日'),
                 ),
@@ -2829,7 +3005,7 @@ function TaskTabV2(props) {
             }
             return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, parts)
           })(),
-          h('span', { style: { color: V2_T.text.tertiary, fontSize: 12 } }, '清单'),
+          h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '清单'),
           h(
             'select',
             {
@@ -2841,12 +3017,12 @@ function TaskTabV2(props) {
                 if ((v2TaskListId(task) || null) !== target) patch.groupId = null
                 patchTask(task.id, task.rev, patch, null)
               },
-              style: v2InputStyle({ fontSize: 13, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
             },
             h('option', { value: '' }, '收集箱'),
             visibleLists().map(function map(list) { return h('option', { key: list.id, value: list.id }, list.name) }),
           ),
-          h('span', { style: { color: V2_T.text.tertiary, fontSize: 12 } }, '标签'),
+          h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '标签'),
           h(
             'div',
             { style: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' } },
@@ -2859,7 +3035,7 @@ function TaskTabV2(props) {
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 3,
-                    fontSize: 11,
+                    fontSize: v2fs(11),
                     padding: '2px 8px',
                     borderRadius: V2_T.radius.pill,
                     background: V2_T.surface.panel2,
@@ -2892,7 +3068,7 @@ function TaskTabV2(props) {
                       update({ detailTagOpen: false })
                     }
                   },
-                  style: v2InputStyle({ fontSize: 12, padding: '3px 8px', width: 120, height: 26, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+                  style: v2InputStyle({ fontSize: v2fs(12), padding: '3px 8px', width: 120, height: 26, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
                 })
               : h('button', {
                   type: 'button',
@@ -2905,7 +3081,7 @@ function TaskTabV2(props) {
         h(
           'div',
           { style: v2CardStyle({ marginBottom: 12, padding: '10px 12px' }) },
-          h('div', { style: { fontSize: 12, fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em', marginBottom: 6 } }, '备注'),
+          h('div', { style: { fontSize: v2fs(12), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em', marginBottom: 6 } }, '备注'),
           h('textarea', {
             value: task.notes || '',
             rows: 4,
@@ -2915,7 +3091,7 @@ function TaskTabV2(props) {
               const value = e.target.value
               if (value !== (task.notes || '')) patchTask(task.id, task.rev, { notes: value || null }, null)
             },
-            style: v2InputStyle({ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: 13, lineHeight: '20px', minHeight: 88, padding: '8px 10px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+            style: v2InputStyle({ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: v2fs(13), lineHeight: '20px', minHeight: 88, padding: '8px 10px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
           }),
         ),
         h(
@@ -2924,7 +3100,7 @@ function TaskTabV2(props) {
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 38, padding: '0 12px', borderBottom: '1px solid ' + V2_T.border.subtle } },
-            h('span', { style: { fontSize: 12, fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '子任务'),
+            h('span', { style: { fontSize: v2fs(12), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '子任务'),
             h('button', {
               type: 'button',
               onClick: function onClick() { addSubtask(task) },
@@ -2936,19 +3112,19 @@ function TaskTabV2(props) {
             { style: { padding: '4px 6px 6px' } },
             children.length
               ? children.map(function map(child) { return renderTaskRow(child) })
-              : h('div', { style: { fontSize: 11, color: V2_T.text.tertiary, padding: '6px 10px' } }, '暂无子任务'),
+              : h('div', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, padding: '6px 10px' } }, '暂无子任务'),
           ),
         ),
       ),
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderTop: '1px solid ' + V2_T.border.subtle } },
-        h('span', { style: { fontSize: 11, color: V2_T.text.tertiary, flex: '1 1 auto' } }, v2TaskDateText(task)),
+        h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, flex: '1 1 auto' } }, v2TaskDateText(task)),
         state.scope.kind === 'trash'
-          ? h('button', { type: 'button', onClick: function onClick() { restoreTask(task) }, style: v2BtnStyle('soft', { fontSize: 11, height: 32, padding: '0 12px', borderRadius: V2_T.radius.md, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '恢复')
-          : h('button', { type: 'button', onClick: function onClick() { deleteTask(task) }, style: v2BtnStyle('ghost', { fontSize: 11, height: 32, padding: '0 12px', borderRadius: V2_T.radius.md, color: V2_T.status.danger }) }, '删除'),
+          ? h('button', { type: 'button', onClick: function onClick() { restoreTask(task) }, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 32, padding: '0 12px', borderRadius: V2_T.radius.md, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '恢复')
+          : h('button', { type: 'button', onClick: function onClick() { deleteTask(task) }, style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 32, padding: '0 12px', borderRadius: V2_T.radius.md, color: V2_T.status.danger }) }, '删除'),
         state.scope.kind === 'trash'
-          ? h('button', { type: 'button', onClick: function onClick() { purgeTask(task) }, style: v2BtnStyle('danger', { fontSize: 11, height: 32, padding: '0 12px', borderRadius: V2_T.radius.md, border: '1px solid ' + V2_T.status.danger + '55' }) }, '彻底删除')
+          ? h('button', { type: 'button', onClick: function onClick() { purgeTask(task) }, style: v2BtnStyle('danger', { fontSize: v2fs(11), height: 32, padding: '0 12px', borderRadius: V2_T.radius.md, border: '1px solid ' + V2_T.status.danger + '55' }) }, '彻底删除')
           : null,
       ),
     )
@@ -2994,7 +3170,7 @@ function NewGroupRow(props) {
         onClick: props.onOpen,
         style: Object.assign(
           v2BtnStyle('ghost', {
-            fontSize: 11,
+            fontSize: v2fs(11),
             marginTop: 8,
             justifyContent: 'flex-start',
             color: V2_T.text.tertiary,
@@ -3021,9 +3197,9 @@ function NewGroupRow(props) {
         if (e.key === 'Enter') props.onSubmit()
         if (e.key === 'Escape') props.onCancel()
       },
-      style: v2InputStyle({ fontSize: 13, padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+      style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
     }),
-    h('button', { type: 'button', onClick: props.onSubmit, style: v2BtnStyle('primary', { fontSize: 11, height: 28, padding: '0 12px', borderRadius: V2_T.radius.sm }) }, '创建'),
+    h('button', { type: 'button', onClick: props.onSubmit, style: v2BtnStyle('primary', { fontSize: v2fs(11), height: 28, padding: '0 12px', borderRadius: V2_T.radius.sm }) }, '创建'),
   )
 }
 

@@ -38,7 +38,7 @@ function V2MissingTab(props) {
         alignItems: 'center',
         justifyContent: 'center',
         color: V2.sub,
-        fontSize: 13,
+        fontSize: v2fs(13),
       },
     },
     (props && props.label ? props.label : '') + ' 模块未加载，请刷新页面或重启 DSH。',
@@ -63,7 +63,7 @@ function V2UnavailablePanel() {
         boxSizing: 'border-box',
       },
     },
-    h('div', { style: { maxWidth: 520, fontSize: 13, lineHeight: 1.7 } }, 'LifeOS 界面未能加载。请完全退出 DSH 后重新打开；若问题持续，请反馈该提示与 DSH 版本。'),
+    h('div', { style: { maxWidth: 520, fontSize: v2fs(13), lineHeight: 1.7 } }, 'LifeOS 界面未能加载。请完全退出 DSH 后重新打开；若问题持续，请反馈该提示与 DSH 版本。'),
   )
 }
 
@@ -270,7 +270,7 @@ function LifeosPanelV2() {
       btn.style.border = 'none'
       btn.style.color = item.danger ? V2.danger : V2.text
       btn.style.fontFamily = COLORS.fontFamily
-      btn.style.fontSize = '12px'
+      btn.style.fontSize = v2fs(12)
       btn.style.padding = '7px 10px'
       btn.style.borderRadius = '7px'
       btn.style.cursor = 'pointer'
@@ -485,7 +485,7 @@ function LifeosPanelV2() {
                 border: active ? '1px solid ' + V2_T.accent.line : '1px solid transparent',
                 background: active ? V2_T.accent.soft : 'transparent',
                 color: active ? V2_T.accent.base : V2_T.text.secondary,
-                fontSize: 13,
+                fontSize: v2fs(13),
                 fontWeight: active ? 600 : 500,
                 fontFamily: COLORS.fontFamily,
                 borderRadius: V2_T.radius.md,
@@ -520,7 +520,7 @@ function LifeosPanelV2() {
           },
           h(V2Icon, { name: 'plus', size: 14 }),
           '快速记录',
-          h('span', { style: { color: V2.faint, fontSize: 10, marginLeft: 2 } }, '⌘⇧Space'),
+          h('span', { style: { color: V2.faint, fontSize: v2fs(10), marginLeft: 2 } }, '⌘⇧Space'),
         ),
         h(
           'button',
@@ -545,7 +545,7 @@ function LifeosPanelV2() {
               background: '#3a2c12',
               borderBottom: '1px solid #6b5423',
               color: '#f6c453',
-              fontSize: 12,
+              fontSize: v2fs(12),
               lineHeight: 1.5,
             },
           },
@@ -626,10 +626,10 @@ class V2PanelBoundary extends React.Component {
             background: COLORS.bgLayer1 || COLORS.bgBase,
           },
         },
-        h('div', { style: { fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'LifeOS 界面加载失败'),
+        h('div', { style: { fontSize: v2fs(16), fontWeight: 600, marginBottom: 8 } }, 'LifeOS 界面加载失败'),
         h(
           'div',
-          { style: { fontSize: 13, color: V2.sub, lineHeight: 1.6, wordBreak: 'break-word' } },
+          { style: { fontSize: v2fs(13), color: V2.sub, lineHeight: 1.6, wordBreak: 'break-word' } },
           message,
         ),
         h(
@@ -962,14 +962,14 @@ function V2HostCaptureDialog(props) {
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-        h('div', { style: { fontSize: 13, fontWeight: 600, color: V2.text, flex: '1 1 auto' } }, '快速记录'),
+        h('div', { style: { fontSize: v2fs(13), fontWeight: 600, color: V2.text, flex: '1 1 auto' } }, '快速记录'),
         h(
           'button',
           {
             type: 'button',
             title: '关闭',
             onClick: close,
-            style: { width: 24, height: 24, border: 'none', background: 'transparent', color: V2.faint, cursor: 'pointer', fontSize: 16 },
+            style: { width: 24, height: 24, border: 'none', background: 'transparent', color: V2.faint, cursor: 'pointer', fontSize: v2fs(16) },
           },
           '×',
         ),
@@ -1001,7 +1001,7 @@ function V2HostCaptureDialog(props) {
                 background: active ? V2.hover : 'transparent',
                 color: active ? V2.text : V2.sub,
                 fontFamily: COLORS.fontFamily,
-                fontSize: 12,
+                fontSize: v2fs(12),
               },
             },
             h(V2Icon, { name: item.icon, size: 13 }),
@@ -1031,10 +1031,10 @@ function V2HostCaptureDialog(props) {
           lineHeight: 1.6,
         }),
       }),
-      error ? h('div', { style: { fontSize: 11, color: V2.danger, lineHeight: '17px' } }, error) : null,
+      error ? h('div', { style: { fontSize: v2fs(11), color: V2.danger, lineHeight: '17px' } }, error) : null,
       h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: V2.faint } },
+        { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: v2fs(11), color: V2.faint } },
         h('span', null, target === 'task' ? 'Enter 保存 · Shift+Enter 换行' : 'Enter 保存（长文换行）· Ctrl+Enter 保存'),
         h('span', { style: { flex: '1 1 auto' } }),
         h('button', { type: 'button', onClick: close, style: v2BtnStyle('ghost') }, '取消'),

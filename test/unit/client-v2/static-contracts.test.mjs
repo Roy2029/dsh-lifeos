@@ -114,3 +114,31 @@ test('client-v2：LifeOS 设置页（V2）接通并驱动四个页签', () => {
   assert.match(readV2('50-notes.js'), /notesPrefs\.notesAutosaveMs/)
   assert.match(readV2('50-notes.js'), /fontSize: notesFontSize/)
 })
+
+test('client-v2：界面字号四档 / 笔记字号移入编辑器 / 拖拽插入线', () => {
+  const core = readV2('00-core.js')
+  /* 根变量 + calc 缩放：只放大文字，不影响布局尺寸 */
+  assert.match(core, /V2_FONT_SCALE_CHOICES/)
+  assert.match(core, /small: 0\.92/)
+  assert.match(core, /xlarge: 1\.18/)
+  assert.match(core, /function v2fs\(size\)/)
+  assert.match(core, /--v2-font-scale/)
+  const settings = readV2('60-settings.js')
+  assert.match(settings, /uiFontSize: 'medium'/)
+  assert.match(settings, /'界面字号'/)
+  assert.doesNotMatch(settings, /'笔记编辑器字号'/)
+  /* 笔记字号改在编辑器内循环切换（Aa） */
+  const notes = readV2('50-notes.js')
+  assert.match(notes, /NOTES_FONT_STEPS/)
+  assert.match(notes, /function cycleNotesFontSize/)
+  assert.match(notes, /笔记字号/)
+  /* 任务拖拽：半区判定 + 插入高亮线 + 间隙值法（1024） */
+  const tasks = readV2('20-tasks.js')
+  assert.match(tasks, /TASK_SORT_STEP = 1024/)
+  assert.match(tasks, /dropSide/)
+  assert.match(tasks, /key: 'drop-line'/)
+  assert.match(tasks, /key: 'list-drop-line'/)
+  assert.match(tasks, /key: 'group-drop-line'/)
+  assert.match(tasks, /Math\.floor\(\(a \+ b\) \/ 2\)/)
+  assert.match(tasks, /index \+ \(after \? 1 : 0\)/)
+})

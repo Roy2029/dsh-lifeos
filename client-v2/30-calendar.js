@@ -373,7 +373,7 @@ function cal2OpenMenu(x, y, items) {
     button.style.border = 'none'
     button.style.color = item.danger ? V2_T.status.danger : V2_T.text.primary
     button.style.fontFamily = COLORS.fontFamily
-    button.style.fontSize = '12px'
+    button.style.fontSize = v2fs(12)
     button.style.padding = '6px 10px'
     button.style.borderRadius = V2_T.radius.sm + 'px'
     button.style.cursor = 'pointer'
@@ -422,7 +422,7 @@ function cal2FieldLabel(text) {
     'div',
     {
       style: {
-        fontSize: V2_T.font.caption,
+        fontSize: v2fs(V2_T.font.caption),
         fontWeight: 500,
         color: V2_T.text.tertiary,
         lineHeight: '16px',
@@ -443,7 +443,7 @@ function cal2FieldStyle(extra) {
       outline: 'none',
       color: V2_T.text.primary,
       fontFamily: COLORS.fontFamily,
-      fontSize: V2_T.font.body,
+      fontSize: v2fs(V2_T.font.body),
       padding: '0 9px',
       borderRadius: V2_T.radius.sm,
       height: 32,
@@ -613,7 +613,7 @@ function Cal2TaskModal(props) {
               'div',
               {
                 key: 't',
-                style: { flex: '1 1 auto', fontSize: V2_T.font.title, fontWeight: 600, color: V2_T.text.primary },
+                style: { flex: '1 1 auto', fontSize: v2fs(V2_T.font.title), fontWeight: 600, color: V2_T.text.primary },
               },
               isNew ? '新建任务' : '编辑日程',
             ),
@@ -687,7 +687,7 @@ function Cal2TaskModal(props) {
                   gap: 6,
                   height: 32,
                   padding: '0 2px',
-                  fontSize: V2_T.font.meta,
+                  fontSize: v2fs(V2_T.font.meta),
                   color: V2_T.text.secondary,
                   cursor: 'pointer',
                   flex: '0 0 auto',
@@ -763,7 +763,7 @@ function Cal2TaskModal(props) {
               ),
             ]),
           ]),
-          error ? h('div', { key: 'error', style: { fontSize: V2_T.font.meta, color: V2_T.status.danger } }, error) : null,
+          error ? h('div', { key: 'error', style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.status.danger } }, error) : null,
         ]),
         h(
           'div',
@@ -790,7 +790,7 @@ function Cal2TaskModal(props) {
                   borderRadius: V2_T.radius.sm,
                   color: V2_T.text.secondary,
                   fontFamily: COLORS.fontFamily,
-                  fontSize: V2_T.font.body,
+                  fontSize: v2fs(V2_T.font.body),
                   cursor: 'pointer',
                 },
               },
@@ -812,7 +812,7 @@ function Cal2TaskModal(props) {
                   borderRadius: V2_T.radius.sm,
                   color: '#fff',
                   fontFamily: COLORS.fontFamily,
-                  fontSize: V2_T.font.body,
+                  fontSize: v2fs(V2_T.font.body),
                   fontWeight: 500,
                   cursor: 'pointer',
                   opacity: saving ? 0.6 : 1,
@@ -1648,7 +1648,7 @@ function CalendarTabV2(props) {
               borderRadius: V2_T.radius.sm,
               color: V2_T.text.secondary,
               fontFamily: COLORS.fontFamily,
-              fontSize: V2_T.font.body,
+              fontSize: v2fs(V2_T.font.body),
               cursor: 'pointer',
               whiteSpace: 'nowrap',
             },
@@ -1678,7 +1678,7 @@ function CalendarTabV2(props) {
             key: 'title',
             title: headerTitle,
             style: {
-              fontSize: 20,
+              fontSize: v2fs(20),
               fontWeight: 600,
               color: V2_T.text.primary,
               marginLeft: 10,
@@ -1697,7 +1697,7 @@ function CalendarTabV2(props) {
               {
                 key: 'loading',
                 style: {
-                  fontSize: V2_T.font.meta,
+                  fontSize: v2fs(V2_T.font.meta),
                   color: V2_T.text.tertiary,
                   marginLeft: 8,
                   whiteSpace: 'nowrap',
@@ -1741,7 +1741,7 @@ function CalendarTabV2(props) {
                   borderRadius: 6,
                   background: active ? V2_T.accent.soft : 'transparent',
                   color: active ? V2_T.accent.base : V2_T.text.tertiary,
-                  fontSize: V2_T.font.meta,
+                  fontSize: v2fs(V2_T.font.meta),
                   fontWeight: active ? 600 : 400,
                   fontFamily: COLORS.fontFamily,
                   cursor: 'pointer',
@@ -1823,7 +1823,7 @@ function CalendarTabV2(props) {
           border: '1px solid ' + V2_T.border.subtle,
           borderLeft: '2px solid ' + (hasPriority ? color : 'transparent'),
           background: V2_T.surface.panel2,
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           color: V2_T.text.primary,
           whiteSpace: 'nowrap',
           overflow: 'hidden',
@@ -1839,7 +1839,7 @@ function CalendarTabV2(props) {
               {
                 key: 'time',
                 style: {
-                  fontSize: 10,
+                  fontSize: v2fs(10),
                   color: entry.dueOnly ? V2_T.status.warn : V2_T.text.tertiary,
                   flex: '0 0 auto',
                 },
@@ -1891,7 +1891,7 @@ function CalendarTabV2(props) {
         border: '1px dashed ' + V2_T.accent.line,
         borderRadius: 6,
         color: V2_T.text.primary,
-        fontSize: V2_T.font.caption,
+        fontSize: v2fs(V2_T.font.caption),
         padding: '0 6px',
         outline: 'none',
         fontFamily: COLORS.fontFamily,
@@ -1982,21 +1982,21 @@ function CalendarTabV2(props) {
                       borderRadius: 6,
                       background: V2_T.accent.base,
                       color: '#fff',
-                      fontSize: V2_T.font.meta,
+                      fontSize: v2fs(V2_T.font.meta),
                       fontWeight: 600,
                     }
                   : {
                       display: 'inline-flex',
                       alignItems: 'center',
                       height: 20,
-                      fontSize: V2_T.font.meta,
+                      fontSize: v2fs(V2_T.font.meta),
                       color: otherMonth ? 'rgba(129, 144, 168, 0.55)' : V2_T.text.tertiary,
                       fontWeight: 500,
                     },
               },
               String(date.getDate()),
             ),
-            isToday ? h('span', { key: 'tag', style: { fontSize: 10, color: V2_T.accent.base } }, '今天') : null,
+            isToday ? h('span', { key: 'tag', style: { fontSize: v2fs(10), color: V2_T.accent.base } }, '今天') : null,
           ],
         ),
         visible.map(renderMonthChip),
@@ -2021,7 +2021,7 @@ function CalendarTabV2(props) {
                   border: 'none',
                   background: 'transparent',
                   color: V2_T.text.tertiary,
-                  fontSize: V2_T.font.caption,
+                  fontSize: v2fs(V2_T.font.caption),
                   textAlign: 'left',
                   cursor: 'pointer',
                   borderRadius: 4,
@@ -2057,7 +2057,7 @@ function CalendarTabV2(props) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               fontWeight: 600,
               color: V2_T.text.tertiary,
               borderRight: index === CAL2_MONTH_HEADERS.length - 1 ? 'none' : '1px solid ' + V2_T.border.subtle,
@@ -2132,7 +2132,7 @@ function CalendarTabV2(props) {
           zIndex: 5,
           pointerEvents: 'none',
           padding: '4px 8px',
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           color: V2_T.text.primary,
           overflow: 'hidden',
           boxSizing: 'border-box',
@@ -2140,7 +2140,7 @@ function CalendarTabV2(props) {
       },
       [
         h('div', { key: 'title', style: { fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, preview.title || '任务'),
-        h('div', { key: 'time', style: { fontSize: 10, color: V2_T.text.tertiary } }, cal2MinToHm(preview.startMin) + ' – ' + cal2MinToHm(preview.endMin)),
+        h('div', { key: 'time', style: { fontSize: v2fs(10), color: V2_T.text.tertiary } }, cal2MinToHm(preview.startMin) + ' – ' + cal2MinToHm(preview.endMin)),
       ],
     )
   }
@@ -2162,7 +2162,7 @@ function CalendarTabV2(props) {
         zIndex: 4,
         pointerEvents: 'none',
         padding: '3px 6px',
-        fontSize: 10,
+        fontSize: v2fs(10),
         color: V2_T.status.success,
         boxSizing: 'border-box',
         overflow: 'hidden',
@@ -2211,7 +2211,7 @@ function CalendarTabV2(props) {
           border: '1px solid ' + V2_T.accent.line,
           borderRadius: V2_T.radius.sm,
           color: V2_T.text.primary,
-          fontSize: V2_T.font.meta,
+          fontSize: v2fs(V2_T.font.meta),
           padding: '0 8px',
           outline: 'none',
           fontFamily: COLORS.fontFamily,
@@ -2383,7 +2383,7 @@ function CalendarTabV2(props) {
                       border: 'none',
                       background: 'rgba(4, 8, 14, 0.55)',
                       color: V2_T.status.warn,
-                      fontSize: 9.5,
+                      fontSize: v2fs(9.5),
                       borderRadius: 4,
                       padding: '0 4px',
                       cursor: 'pointer',
@@ -2491,7 +2491,7 @@ function CalendarTabV2(props) {
           border: '1px solid ' + V2_T.border.subtle,
           borderLeft: '2px solid ' + (hasPriority ? color : 'transparent'),
           background: V2_T.surface.panel2,
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           color: V2_T.text.primary,
           whiteSpace: 'nowrap',
           overflow: 'hidden',
@@ -2502,7 +2502,7 @@ function CalendarTabV2(props) {
       },
       [
         entry.dueOnly
-          ? h('span', { key: 'tag', style: { fontSize: 10, color: V2_T.status.warn, flex: '0 0 auto' } }, '截止')
+          ? h('span', { key: 'tag', style: { fontSize: v2fs(10), color: V2_T.status.warn, flex: '0 0 auto' } }, '截止')
           : null,
         h('span', { key: 'title', style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, task.title),
       ],
@@ -2518,7 +2518,7 @@ function CalendarTabV2(props) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           color: V2_T.text.tertiary,
           borderRight: '1px solid ' + V2_T.border.subtle,
         },
@@ -2599,7 +2599,7 @@ function CalendarTabV2(props) {
           background: V2_T.surface.panel2,
           borderBottom: '1px solid ' + V2_T.border.subtle,
           color: V2_T.text.tertiary,
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           cursor: 'pointer',
           flex: '0 0 auto',
         },
@@ -2641,10 +2641,10 @@ function CalendarTabV2(props) {
         [
           h(
             'b',
-            { key: 'wd', style: { fontSize: 12, fontWeight: 600, color: isToday ? V2_T.accent.base : V2_T.text.secondary } },
+            { key: 'wd', style: { fontSize: v2fs(12), fontWeight: 600, color: isToday ? V2_T.accent.base : V2_T.text.secondary } },
             CAL2_WEEKDAY_SHORT[date.getDay()],
           ),
-          h('span', { key: 'md', style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, date.getMonth() + 1 + '/' + date.getDate()),
+          h('span', { key: 'md', style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, date.getMonth() + 1 + '/' + date.getDate()),
         ],
       )
     })
@@ -2676,7 +2676,7 @@ function CalendarTabV2(props) {
               position: 'absolute',
               top: Math.max(1, top - 6),
               right: 6,
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               color: V2_T.text.tertiary,
               lineHeight: '13px',
               pointerEvents: 'none',
@@ -2827,7 +2827,7 @@ function CalendarTabV2(props) {
               title: '展开任务栏',
               style: {
                 writingMode: 'vertical-rl',
-                fontSize: V2_T.font.caption,
+                fontSize: v2fs(V2_T.font.caption),
                 color: V2_T.text.tertiary,
                 letterSpacing: 2,
                 cursor: 'pointer',
@@ -2865,7 +2865,7 @@ function CalendarTabV2(props) {
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   padding: '8px 6px 4px',
-                  fontSize: V2_T.font.caption,
+                  fontSize: v2fs(V2_T.font.caption),
                   fontWeight: 600,
                   color: V2_T.text.tertiary,
                   letterSpacing: 0.2,
@@ -2875,7 +2875,7 @@ function CalendarTabV2(props) {
                 h('span', { key: 'label' }, group.label),
                 h(
                   'span',
-                  { key: 'count', style: { fontSize: V2_T.font.caption, fontWeight: 500, color: V2_T.text.tertiary } },
+                  { key: 'count', style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 500, color: V2_T.text.tertiary } },
                   String(group.items.length),
                 ),
               ],
@@ -2902,7 +2902,7 @@ function CalendarTabV2(props) {
                     height: 32,
                     padding: '0 10px',
                     borderRadius: 6,
-                    fontSize: V2_T.font.body,
+                    fontSize: v2fs(V2_T.font.body),
                     color: V2_T.text.primary,
                     cursor: 'grab',
                     opacity: draggingTaskId === task.id ? 0.4 : 1,
@@ -2935,7 +2935,7 @@ function CalendarTabV2(props) {
                     'span',
                     {
                       key: 'date',
-                      style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, flex: '0 0 auto' },
+                      style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, flex: '0 0 auto' },
                     },
                     barDateText(task),
                   ),
@@ -2954,7 +2954,7 @@ function CalendarTabV2(props) {
             key: 'empty',
             style: {
               padding: '24px 8px',
-              fontSize: V2_T.font.meta,
+              fontSize: v2fs(V2_T.font.meta),
               color: V2_T.text.tertiary,
               textAlign: 'center',
               lineHeight: 1.7,
@@ -3006,7 +3006,7 @@ function CalendarTabV2(props) {
                 onChange: function onChange(event) {
                   setListFilter(event.currentTarget.value)
                 },
-                style: Object.assign(cal2FieldStyle({ height: 30, fontSize: 12, cursor: 'pointer' }), {
+                style: Object.assign(cal2FieldStyle({ height: 30, fontSize: v2fs(12), cursor: 'pointer' }), {
                   flex: '1 1 auto',
                   width: 'auto',
                   minWidth: 0,
@@ -3081,7 +3081,7 @@ function CalendarTabV2(props) {
               flex: '0 0 auto',
               borderTop: '1px solid ' + V2_T.border.subtle,
               padding: '6px 12px',
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               color: V2_T.text.tertiary,
             },
           },
@@ -3104,7 +3104,7 @@ function CalendarTabV2(props) {
           background: V2_T.status.dangerSoft,
           borderBottom: '1px solid rgba(255, 138, 138, 0.25)',
           color: V2_T.status.danger,
-          fontSize: V2_T.font.meta,
+          fontSize: v2fs(V2_T.font.meta),
           flex: '0 0 auto',
         },
       },
@@ -3137,7 +3137,7 @@ function CalendarTabV2(props) {
               borderRadius: 6,
               color: V2_T.status.danger,
               fontFamily: COLORS.fontFamily,
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               cursor: 'pointer',
               whiteSpace: 'nowrap',
             },

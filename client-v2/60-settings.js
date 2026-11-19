@@ -9,6 +9,7 @@ const V2_SETTINGS_CALENDAR_KEY = 'lifeos.v2.calendar'
 
 const V2_SETTINGS_DEFAULTS = {
   restoreLastTab: true,
+  uiFontSize: 'medium',
   taskView: 'list',
   taskSort: 'custom',
   calendarView: 'week',
@@ -18,6 +19,7 @@ const V2_SETTINGS_DEFAULTS = {
 }
 
 const V2_SETTINGS_ENUMS = {
+  uiFontSize: ['small', 'medium', 'large', 'xlarge'],
   taskView: ['list', 'board'],
   taskSort: ['custom', 'created', 'date', 'priority'],
   calendarView: ['month', 'week', 'day'],
@@ -26,6 +28,7 @@ const V2_SETTINGS_ENUMS = {
 }
 
 const V2_SETTINGS_LABELS = {
+  uiFontSize: { small: '小', medium: '中', large: '大', xlarge: '超大' },
   taskView: { list: '列表', board: '看板' },
   taskSort: { custom: '自定义', created: '创建时间', date: '日期', priority: '优先级' },
   calendarView: { month: '月', week: '周', day: '日' },
@@ -101,8 +104,8 @@ function v2setCard(title, hint, rows) {
     h(
       'div',
       { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 } },
-      h('div', { style: { fontSize: V2_T.font.title, fontWeight: 600, color: V2_T.text.primary } }, title),
-      hint ? h('div', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, hint) : null,
+      h('div', { style: { fontSize: v2fs(V2_T.font.title), fontWeight: 600, color: V2_T.text.primary } }, title),
+      hint ? h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, hint) : null,
     ),
     rows,
   )
@@ -129,9 +132,9 @@ function v2setRows(items) {
         h(
           'div',
           { style: { minWidth: 0, flex: '1 1 auto' } },
-          h('div', { style: { fontSize: V2_T.font.body, color: V2_T.text.primary, lineHeight: '19px' } }, item.title),
+          h('div', { style: { fontSize: v2fs(V2_T.font.body), color: V2_T.text.primary, lineHeight: '19px' } }, item.title),
           item.desc
-            ? h('div', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '16px', marginTop: 2 } }, item.desc)
+            ? h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, lineHeight: '16px', marginTop: 2 } }, item.desc)
             : null,
         ),
         h('div', { style: { flex: '0 0 auto' } }, item.control),
@@ -179,7 +182,7 @@ function v2setSegmented(props) {
             borderRadius: 6,
             background: active ? V2_T.accent.soft : 'transparent',
             color: active ? V2_T.accent.base : V2_T.text.secondary,
-            fontSize: V2_T.font.caption,
+            fontSize: v2fs(V2_T.font.caption),
             fontWeight: active ? 600 : 400,
             cursor: 'pointer',
             whiteSpace: 'nowrap',
@@ -249,8 +252,8 @@ function v2setAboutRow(label, value, key) {
         borderTop: '1px solid ' + V2_T.border.subtle,
       },
     },
-    h('div', { style: { flex: '1 1 auto', fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, label),
-    h('div', { style: { flex: '0 0 auto', fontSize: V2_T.font.caption, color: V2_T.text.secondary, textAlign: 'right' } }, value),
+    h('div', { style: { flex: '1 1 auto', fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, label),
+    h('div', { style: { flex: '0 0 auto', fontSize: v2fs(V2_T.font.caption), color: V2_T.text.secondary, textAlign: 'right' } }, value),
   )
 }
 
@@ -316,12 +319,12 @@ function LifeosSettingsV2() {
     h(
       'div',
       { style: { display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 4px' } },
-      h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600, color: V2_T.text.primary } }, 'LifeOS'),
-      h('span', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, 'v' + PLUGIN_VERSION),
+      h('h2', { style: { margin: 0, fontSize: v2fs(18), fontWeight: 600, color: V2_T.text.primary } }, 'LifeOS'),
+      h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, 'v' + PLUGIN_VERSION),
     ),
     h(
       'p',
-      { style: { margin: '0 0 14px', fontSize: V2_T.font.meta, color: V2_T.text.tertiary, lineHeight: '18px' } },
+      { style: { margin: '0 0 14px', fontSize: v2fs(V2_T.font.meta), color: V2_T.text.tertiary, lineHeight: '18px' } },
       '四个页签的默认行为与编辑器偏好。修改立即生效并保存在本机。',
     ),
     h(
@@ -334,7 +337,7 @@ function LifeosSettingsV2() {
           gap: 6,
           minHeight: 18,
           marginBottom: 12,
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           color: savedAt ? V2_T.status.success : V2_T.text.tertiary,
         },
       },
@@ -346,6 +349,17 @@ function LifeosSettingsV2() {
       '通用',
       '',
       v2setRows([
+        {
+          key: 'uiFontSize',
+          title: '界面字号',
+          desc: '影响任务、日历、习惯与设置页；笔记字号在笔记编辑器内单独调整。',
+          control: v2setSegmented({
+            label: '界面字号',
+            options: optionsFor('uiFontSize'),
+            value: settings.uiFontSize,
+            onChange: function onChange(value) { commit({ uiFontSize: value }) },
+          }),
+        },
         {
           key: 'restoreLastTab',
           title: '记住上次打开的页签',
@@ -425,7 +439,7 @@ function LifeosSettingsV2() {
 
     v2setCard(
       '笔记',
-      '',
+      '编辑器字号在笔记页签内调整',
       v2setRows([
         {
           key: 'notesAutosaveMs',
@@ -436,17 +450,6 @@ function LifeosSettingsV2() {
             options: optionsFor('notesAutosaveMs'),
             value: settings.notesAutosaveMs,
             onChange: function onChange(value) { commit({ notesAutosaveMs: value }) },
-          }),
-        },
-        {
-          key: 'notesFontSize',
-          title: '编辑器字号',
-          desc: '同时作用于编辑与预览。',
-          control: v2setSegmented({
-            label: '笔记编辑器字号',
-            options: optionsFor('notesFontSize'),
-            value: settings.notesFontSize,
-            onChange: function onChange(value) { commit({ notesFontSize: value }) },
           }),
         },
       ]),
@@ -481,7 +484,7 @@ function LifeosSettingsV2() {
                 borderRadius: V2_T.radius.sm,
                 background: resetArmed ? V2_T.status.dangerSoft : 'transparent',
                 color: resetArmed ? V2_T.status.danger : V2_T.text.secondary,
-                fontSize: V2_T.font.caption,
+                fontSize: v2fs(V2_T.font.caption),
                 cursor: 'pointer',
               },
             },
@@ -489,7 +492,7 @@ function LifeosSettingsV2() {
           ),
           h(
             'span',
-            { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } },
+            { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } },
             resetArmed ? '再次点击才会执行。' : '仅重置以上偏好，不删除任务、习惯或笔记。',
           ),
         ),

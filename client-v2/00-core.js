@@ -17,6 +17,56 @@ function v2UiEnabled() {
   }
 }
 
+/* ── 全局界面字号（小/中/大/超大） ──
+ * 说明：任务/日历/习惯/设置页共用 --v2-font-scale 根变量缩放文字；笔记编辑器字号单独在笔记内调整。
+ * 设置存储仍由 60-settings 负责，这里只读取 uiFontSize 并派发 CSS 变量，避免核心层依赖设置模块。 */
+const V2_FONT_SCALE_CHOICES = { small: 0.92, medium: 1, large: 1.08, xlarge: 1.18 }
+let v2FontScaleCache = null
+
+function v2FontScale() {
+  if (v2FontScaleCache !== null) return v2FontScaleCache
+  let scale = 1
+  try {
+    const raw = window.localStorage.getItem('lifeos.v2.settings')
+    const parsed = raw ? JSON.parse(raw) : null
+    const chosen = parsed && parsed.uiFontSize
+    scale = V2_FONT_SCALE_CHOICES[chosen] || 1
+  } catch (error) {
+    scale = 1
+  }
+  v2FontScaleCache = scale
+  return scale
+}
+
+/* 数字字号 → 跟随根变量的 calc 字符串；非数字原样返回（例如 '12px' 或 token 计算值）。 */
+function v2fs(size) {
+  const n = Number(size)
+  if (!Number.isFinite(n)) return size
+  return 'calc(' + n + 'px * var(--v2-font-scale, 1))'
+}
+
+function v2ApplyFontScale() {
+  try {
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.style.setProperty('--v2-font-scale', String(v2FontScale()))
+    }
+  } catch (error) {
+    /* 非浏览器环境忽略 */
+  }
+}
+
+try {
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('lifeos:settings-changed', function onSettingsChanged() {
+      v2FontScaleCache = null
+      v2ApplyFontScale()
+    })
+  }
+} catch (error) {
+  /* ignore */
+}
+v2ApplyFontScale()
+
 /* ── 图标（线性 SVG，24×24 stroke） ── */
 const V2_ICON_PATHS = {
   check: ['M5 12.5l4.5 4.5L19 7.5'],

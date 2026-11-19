@@ -562,7 +562,7 @@ function habitChipStyle(tone, active) {
     padding: '0 6px',
     height: 18,
     borderRadius: V2_T.radius.pill,
-    fontSize: V2_T.font.caption,
+    fontSize: v2fs(V2_T.font.caption),
     lineHeight: '18px',
     whiteSpace: 'nowrap',
     color: active === false ? V2_T.text.secondary : color,
@@ -602,7 +602,7 @@ function habitInputStyle(extra) {
         borderRadius: V2_T.radius.sm,
         padding: '0 10px',
         color: V2_T.text.primary,
-        fontSize: 13,
+        fontSize: v2fs(13),
         boxSizing: 'border-box',
       },
       extra || {},
@@ -613,7 +613,7 @@ function habitInputStyle(extra) {
 function habitTextareaStyle() {
   return Object.assign(habitInputStyle(), {
     height: 'auto',
-    fontSize: 13,
+    fontSize: v2fs(13),
     lineHeight: '20px',
     padding: '8px 10px',
     resize: 'vertical',
@@ -630,7 +630,7 @@ function habitSegmentStyle(active) {
     height: 30,
     padding: '0 12px',
     borderRadius: V2_T.radius.pill,
-    fontSize: V2_T.font.meta,
+    fontSize: v2fs(V2_T.font.meta),
     cursor: 'pointer',
     border: '1px solid ' + (active ? V2_T.accent.line : V2_T.border.subtle),
     background: active ? V2_T.accent.soft : 'transparent',
@@ -649,7 +649,7 @@ function habitFieldStyle() {
 }
 
 function habitLabelStyle() {
-  return { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, fontWeight: 500, lineHeight: '16px', flex: '0 0 auto' }
+  return { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, fontWeight: 500, lineHeight: '16px', flex: '0 0 auto' }
 }
 
 /* ── 小部件 ── */
@@ -719,7 +719,7 @@ function HabitCheckButton(props) {
     done
       ? h(V2Icon, { name: 'check', size: 14, color: V2_T.status.success, strokeWidth: 2.2 })
       : partial
-        ? h('span', { style: { fontSize: 11, fontWeight: 600 } }, String(props.value || 1))
+        ? h('span', { style: { fontSize: v2fs(11), fontWeight: 600 } }, String(props.value || 1))
         : null,
   )
 }
@@ -785,14 +785,14 @@ function HabitStepper(props) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: 4,
-          fontSize: 11,
+          fontSize: v2fs(11),
           fontWeight: 600,
           cursor: disabled ? 'default' : 'pointer',
           fontFamily: COLORS.fontFamily,
         },
       },
       done ? h(V2Icon, { name: 'check', size: 12, color: V2_T.status.success, strokeWidth: 2.2 }) : null,
-      h('span', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, value + '/' + target),
+      h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, value + '/' + target),
     ),
     h(
       'button',
@@ -833,7 +833,7 @@ function HabitStatCard(props) {
         'span',
         {
           style: {
-            fontSize: 20,
+            fontSize: v2fs(20),
             fontWeight: 600,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -842,13 +842,13 @@ function HabitStatCard(props) {
         },
         String(props.value),
       ),
-      props.unit ? h('span', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, props.unit) : null,
+      props.unit ? h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, props.unit) : null,
     ),
-    h('div', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, marginTop: 2, whiteSpace: 'nowrap' } }, props.label),
+    h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, marginTop: 2, whiteSpace: 'nowrap' } }, props.label),
     props.hint
       ? h(
           'div',
-          { style: { fontSize: 10, color: V2_T.text.tertiary, opacity: 0.85, marginTop: 1, whiteSpace: 'nowrap' } },
+          { style: { fontSize: v2fs(10), color: V2_T.text.tertiary, opacity: 0.85, marginTop: 1, whiteSpace: 'nowrap' } },
           props.hint,
         )
       : null,
@@ -916,14 +916,14 @@ function HabitWeekBar(props) {
         },
         h(
           'span',
-          { style: { fontSize: V2_T.font.caption, lineHeight: '14px', color: isToday ? V2_T.accent.base : V2_T.text.tertiary } },
+          { style: { fontSize: v2fs(V2_T.font.caption), lineHeight: '14px', color: isToday ? V2_T.accent.base : V2_T.text.tertiary } },
           HABIT_WEEKDAY_LABELS[habitWeekdayCodeOf(dateKey)] || '',
         ),
         h(
           'span',
           {
             style: {
-              fontSize: 15,
+              fontSize: v2fs(15),
               fontWeight: 600,
               lineHeight: '18px',
               color: isToday ? V2_T.accent.base : V2_T.text.primary,
@@ -981,7 +981,7 @@ function HabitMenuItem(props) {
         background: hover ? V2_T.surface.panel3 : 'transparent',
         color: props.danger ? V2_T.status.danger : V2_T.text.primary,
         fontFamily: COLORS.fontFamily,
-        fontSize: V2_T.font.meta,
+        fontSize: v2fs(V2_T.font.meta),
         padding: '7px 10px',
         borderRadius: V2_T.radius.sm,
         cursor: 'pointer',
@@ -1112,7 +1112,7 @@ function habitModalHeader(title, onClose) {
         flex: '0 0 auto',
       },
     },
-    h('div', { style: { flex: '1 1 auto', fontSize: V2_T.font.title, fontWeight: 600, color: V2_T.text.primary, lineHeight: '20px' } }, title),
+    h('div', { style: { flex: '1 1 auto', fontSize: v2fs(V2_T.font.title), fontWeight: 600, color: V2_T.text.primary, lineHeight: '20px' } }, title),
     h(
       'button',
       {
@@ -1169,7 +1169,7 @@ function HabitEditorModal(props) {
       h('div', { style: habitLabelStyle() }, label),
       node,
       hint
-        ? h('div', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '16px' } }, hint)
+        ? h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, lineHeight: '16px' } }, hint)
         : null,
     )
   }
@@ -1193,7 +1193,7 @@ function HabitEditorModal(props) {
               : source.concat([code])
             props.onChange({ weekDays: next })
           },
-          style: Object.assign(habitSegmentStyle(active), { width: 32, padding: 0, fontSize: 12 }),
+          style: Object.assign(habitSegmentStyle(active), { width: 32, padding: 0, fontSize: v2fs(12) }),
         },
         HABIT_WEEKDAY_LABELS[code],
       )
@@ -1393,7 +1393,7 @@ function HabitEditorModal(props) {
           'div',
           {
             style: {
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               lineHeight: '17px',
               color: V2_T.text.tertiary,
               background: V2_T.surface.input,
@@ -1405,7 +1405,7 @@ function HabitEditorModal(props) {
           '修改频率只影响之后的计划，不会删除历史打卡记录。',
         ),
         error
-          ? h('div', { style: { fontSize: V2_T.font.meta, color: V2_T.status.danger, lineHeight: '18px' } }, error)
+          ? h('div', { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.status.danger, lineHeight: '18px' } }, error)
           : null,
       ),
       habitModalFooter([
@@ -1417,7 +1417,7 @@ function HabitEditorModal(props) {
             type: 'button',
             disabled: saving,
             onClick: props.onClose,
-            style: v2BtnStyle('ghost', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: 12 }),
+            style: v2BtnStyle('ghost', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: v2fs(12) }),
           },
           '取消',
         ),
@@ -1428,7 +1428,7 @@ function HabitEditorModal(props) {
             type: 'button',
             disabled: saving,
             onClick: props.onSave,
-            style: v2BtnStyle('primary', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: 12 }),
+            style: v2BtnStyle('primary', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: v2fs(12) }),
           },
           saving ? '保存中…' : '保存',
         ),
@@ -1465,12 +1465,12 @@ function HabitLogModal(props) {
         h(
           'div',
           { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-          h('div', { style: { fontSize: 13, fontWeight: 600, color: V2_T.text.primary } }, habitFormatDate(log.date)),
+          h('div', { style: { fontSize: v2fs(13), fontWeight: 600, color: V2_T.text.primary } }, habitFormatDate(log.date)),
           log.status ? h('span', { style: habitChipStyle(habitStatusTone(log.status)) }, habitStatusLabel(log.status)) : null,
           h('div', { style: { flex: '1 1 auto' } }),
           h(
             'span',
-            { style: { fontSize: V2_T.font.caption, color: log.hasCheckin ? V2_T.text.tertiary : V2_T.status.danger } },
+            { style: { fontSize: v2fs(V2_T.font.caption), color: log.hasCheckin ? V2_T.text.tertiary : V2_T.status.danger } },
             log.hasCheckin ? '保存日志不会改变打卡状态' : '该日期还没有打卡记录',
           ),
         ),
@@ -1489,12 +1489,12 @@ function HabitLogModal(props) {
         h(
           'div',
           { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-          h('span', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, String(note.length) + ' / ' + HABIT_NOTE_MAX),
+          h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, String(note.length) + ' / ' + HABIT_NOTE_MAX),
           log.hasCheckin
             ? null
-            : h('span', { style: { fontSize: V2_T.font.caption, color: V2_T.status.danger } }, '请先在该日期打卡'),
+            : h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.status.danger } }, '请先在该日期打卡'),
         ),
-        error ? h('div', { style: { fontSize: V2_T.font.meta, color: V2_T.status.danger, lineHeight: '18px' } }, error) : null,
+        error ? h('div', { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.status.danger, lineHeight: '18px' } }, error) : null,
       ),
       habitModalFooter([
         log.existingNote
@@ -1505,7 +1505,7 @@ function HabitLogModal(props) {
                 type: 'button',
                 disabled: saving,
                 onClick: props.onDelete,
-                style: v2BtnStyle('danger', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: 12 }),
+                style: v2BtnStyle('danger', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: v2fs(12) }),
               },
               '删除日志',
             )
@@ -1518,7 +1518,7 @@ function HabitLogModal(props) {
             type: 'button',
             disabled: saving,
             onClick: props.onClose,
-            style: v2BtnStyle('ghost', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: 12 }),
+            style: v2BtnStyle('ghost', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: v2fs(12) }),
           },
           '取消',
         ),
@@ -1529,7 +1529,7 @@ function HabitLogModal(props) {
             type: 'button',
             disabled: saving,
             onClick: props.onSave,
-            style: v2BtnStyle('primary', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: 12 }),
+            style: v2BtnStyle('primary', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: v2fs(12) }),
           },
           saving ? '保存中…' : '保存',
         ),
@@ -1549,7 +1549,7 @@ function HabitConfirmModal(props) {
       habitModalHeader(dialog.title || '确认操作', props.onClose),
       h(
         'div',
-        { style: { padding: '14px 0', fontSize: 13, lineHeight: '20px', color: V2_T.text.secondary } },
+        { style: { padding: '14px 0', fontSize: v2fs(13), lineHeight: '20px', color: V2_T.text.secondary } },
         dialog.body || '',
       ),
       habitModalFooter([
@@ -1560,7 +1560,7 @@ function HabitConfirmModal(props) {
             key: 'cancel',
             type: 'button',
             onClick: props.onClose,
-            style: v2BtnStyle('ghost', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: 12 }),
+            style: v2BtnStyle('ghost', { height: 30, padding: '0 14px', borderRadius: V2_T.radius.sm, fontSize: v2fs(12) }),
           },
           '取消',
         ),
@@ -1575,7 +1575,7 @@ function HabitConfirmModal(props) {
                 height: 30,
                 padding: '0 14px',
                 borderRadius: V2_T.radius.sm,
-                fontSize: 12,
+                fontSize: v2fs(12),
                 background: dialog.danger ? V2_T.status.dangerSoft : V2_T.accent.base,
                 borderColor: dialog.danger ? V2_T.status.danger : V2_T.accent.base,
               }),
@@ -1657,7 +1657,7 @@ function HabitRowV2(props) {
           'span',
           {
             style: {
-              fontSize: 13.5,
+              fontSize: v2fs(13.5),
               fontWeight: 600,
               color: V2_T.text.primary,
               whiteSpace: 'nowrap',
@@ -1688,7 +1688,7 @@ function HabitRowV2(props) {
           'span',
           {
             style: {
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               color: V2_T.text.tertiary,
               lineHeight: '15px',
               whiteSpace: 'nowrap',
@@ -1789,7 +1789,7 @@ function HabitMonthGrid(props) {
           border: meta.border,
           background: selected ? V2_T.accent.soft : meta.background,
           color: meta.color,
-          fontSize: V2_T.font.caption,
+          fontSize: v2fs(V2_T.font.caption),
           fontWeight: isToday ? 600 : 400,
           opacity: future ? 0.55 : 1,
           cursor: 'pointer',
@@ -1809,7 +1809,7 @@ function HabitMonthGrid(props) {
       labels.map(function renderLabel(label, index) {
         return h(
           'span',
-          { key: index, style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, textAlign: 'center', lineHeight: '16px' } },
+          { key: index, style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, textAlign: 'center', lineHeight: '16px' } },
           label,
         )
       }),
@@ -2615,14 +2615,14 @@ function HabitTabV2(props) {
           { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
           h(
             'span',
-            { style: { fontSize: 20, fontWeight: 600, color: V2_T.text.primary, lineHeight: '26px', letterSpacing: '-0.01em' } },
+            { style: { fontSize: v2fs(20), fontWeight: 600, color: V2_T.text.primary, lineHeight: '26px', letterSpacing: '-0.01em' } },
             '习惯',
           ),
           h(
             'span',
             {
               style: {
-                fontSize: V2_T.font.caption,
+                fontSize: v2fs(V2_T.font.caption),
                 color: V2_T.text.secondary,
                 background: V2_T.surface.panel2,
                 borderRadius: V2_T.radius.pill,
@@ -2640,7 +2640,7 @@ function HabitTabV2(props) {
           'div',
           {
             style: {
-              fontSize: V2_T.font.meta,
+              fontSize: v2fs(V2_T.font.meta),
               color: V2_T.text.tertiary,
               marginTop: 1,
               lineHeight: '16px',
@@ -2688,7 +2688,7 @@ function HabitTabV2(props) {
             height: 32,
             padding: '0 12px',
             borderRadius: V2_T.radius.pill,
-            fontSize: V2_T.font.meta,
+            fontSize: v2fs(V2_T.font.meta),
             fontWeight: 600,
             gap: 4,
             flex: '0 0 auto',
@@ -2726,7 +2726,7 @@ function HabitTabV2(props) {
       { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 14px 8px' } },
       h(
         'span',
-        { style: { fontSize: V2_T.font.meta, color: V2_T.text.tertiary, flex: '1 1 auto', minWidth: 0, lineHeight: '18px' } },
+        { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.text.tertiary, flex: '1 1 auto', minWidth: 0, lineHeight: '18px' } },
         '正在查看 ' + habitFormatDate(state.date),
       ),
       h(
@@ -2737,7 +2737,7 @@ function HabitTabV2(props) {
             selectDate(state.today)
           },
           style: v2BtnStyle('soft', {
-            fontSize: V2_T.font.caption,
+            fontSize: v2fs(V2_T.font.caption),
             height: 26,
             padding: '0 10px',
             borderRadius: V2_T.radius.sm,
@@ -2807,7 +2807,7 @@ function HabitTabV2(props) {
           'span',
           {
             style: {
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               fontWeight: 600,
               color: V2_T.text.tertiary,
               letterSpacing: '0.02em',
@@ -2818,7 +2818,7 @@ function HabitTabV2(props) {
         ),
         h(
           'span',
-          { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, marginLeft: 'auto', lineHeight: '16px' } },
+          { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, marginLeft: 'auto', lineHeight: '16px' } },
           String(list.length),
         ),
       ),
@@ -2828,7 +2828,7 @@ function HabitTabV2(props) {
           ? list.map(function renderRow(habit) {
               return renderHabitRow(habit)
             })
-          : h('div', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, padding: '2px 12px 8px' } }, emptyHint),
+          : h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, padding: '2px 12px 8px' } }, emptyHint),
     )
   }
 
@@ -2841,7 +2841,7 @@ function HabitTabV2(props) {
         h(
           'div',
           { style: v2CardStyle({ padding: 24, maxWidth: 420, width: '100%', textAlign: 'center' }) },
-          h('div', { style: { fontSize: V2_T.font.meta, color: V2_T.text.tertiary, lineHeight: '18px' } }, '加载习惯数据…'),
+          h('div', { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.text.tertiary, lineHeight: '18px' } }, '加载习惯数据…'),
         ),
       )
     }
@@ -2863,7 +2863,7 @@ function HabitTabV2(props) {
               textAlign: 'center',
             }),
           },
-          h('div', { style: { fontSize: V2_T.font.meta, color: V2_T.status.danger, lineHeight: '18px' } }, state.error),
+          h('div', { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.status.danger, lineHeight: '18px' } }, state.error),
           h(
             'button',
             {
@@ -2877,7 +2877,7 @@ function HabitTabV2(props) {
                 borderRadius: V2_T.radius.sm,
                 background: V2_T.surface.panel3,
                 color: V2_T.text.primary,
-                fontSize: V2_T.font.meta,
+                fontSize: v2fs(V2_T.font.meta),
               }),
             },
             '重试',
@@ -2903,11 +2903,11 @@ function HabitTabV2(props) {
               textAlign: 'center',
             }),
           },
-          h('div', { style: { fontSize: 32, lineHeight: '38px' } }, '🌱'),
-          h('div', { style: { fontSize: V2_T.font.title, fontWeight: 600, color: V2_T.text.primary, lineHeight: '22px' } }, '还没有习惯。'),
+          h('div', { style: { fontSize: v2fs(32), lineHeight: '38px' } }, '🌱'),
+          h('div', { style: { fontSize: v2fs(V2_T.font.title), fontWeight: 600, color: V2_T.text.primary, lineHeight: '22px' } }, '还没有习惯。'),
           h(
             'div',
-            { style: { fontSize: V2_T.font.meta, color: V2_T.text.tertiary, lineHeight: '18px' } },
+            { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.text.tertiary, lineHeight: '18px' } },
             '从一个每天都能做到的小习惯开始吧。',
           ),
           h(
@@ -2920,7 +2920,7 @@ function HabitTabV2(props) {
                 height: 32,
                 padding: '0 14px',
                 borderRadius: V2_T.radius.sm,
-                fontSize: V2_T.font.meta,
+                fontSize: v2fs(V2_T.font.meta),
                 fontWeight: 600,
               }),
             },
@@ -2955,7 +2955,7 @@ function HabitTabV2(props) {
       'div',
       { style: { padding: '0 8px 24px' } },
       state.error
-        ? h('div', { style: { fontSize: V2_T.font.caption, color: V2_T.status.danger, padding: '4px 12px', lineHeight: '16px' } }, state.error)
+        ? h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.status.danger, padding: '4px 12px', lineHeight: '16px' } }, state.error)
         : null,
       renderHabitSection('当日计划', 'plan', planList, state.date === state.today ? '今天没有计划中的习惯' : '这一天没有计划中的习惯'),
       renderHabitSection('灵活打卡', 'flex', flexList, ''),
@@ -3009,7 +3009,7 @@ function HabitTabV2(props) {
           justifyContent: 'center',
           background: V2_T.surface.shell,
           color: V2_T.text.tertiary,
-          fontSize: V2_T.font.meta,
+          fontSize: v2fs(V2_T.font.meta),
           lineHeight: '20px',
           textAlign: 'center',
           padding: 24,
@@ -3039,7 +3039,7 @@ function HabitTabV2(props) {
               display: 'inline-flex',
               alignItems: 'center',
               gap: 4,
-              fontSize: V2_T.font.caption,
+              fontSize: v2fs(V2_T.font.caption),
               color: V2_T.text.tertiary,
               lineHeight: '16px',
             },
@@ -3064,7 +3064,7 @@ function HabitTabV2(props) {
   function renderInfoRow(label, value) {
     return h(
       'div',
-      { key: label, style: { display: 'flex', gap: 8, fontSize: V2_T.font.meta, lineHeight: '18px', minWidth: 0 } },
+      { key: label, style: { display: 'flex', gap: 8, fontSize: v2fs(V2_T.font.meta), lineHeight: '18px', minWidth: 0 } },
       h('span', { style: { flex: '0 0 64px', color: V2_T.text.tertiary } }, label),
       h('span', { style: { flex: '1 1 auto', minWidth: 0, color: V2_T.text.secondary, wordBreak: 'break-word' } }, value),
     )
@@ -3176,7 +3176,7 @@ function HabitTabV2(props) {
                   'div',
                   {
                     style: {
-                      fontSize: V2_T.font.hero,
+                      fontSize: v2fs(V2_T.font.hero),
                       fontWeight: 600,
                       lineHeight: '24px',
                       color: V2_T.text.primary,
@@ -3198,7 +3198,7 @@ function HabitTabV2(props) {
                 'div',
                 {
                   style: {
-                    fontSize: V2_T.font.meta,
+                    fontSize: v2fs(V2_T.font.meta),
                     color: V2_T.text.tertiary,
                     marginTop: 2,
                     lineHeight: '17px',
@@ -3209,7 +3209,7 @@ function HabitTabV2(props) {
               habit.description
                 ? h(
                     'div',
-                    { style: { fontSize: V2_T.font.body, color: V2_T.text.secondary, marginTop: 6, lineHeight: '19px' } },
+                    { style: { fontSize: v2fs(V2_T.font.body), color: V2_T.text.secondary, marginTop: 6, lineHeight: '19px' } },
                     habit.description,
                   )
                 : null,
@@ -3227,7 +3227,7 @@ function HabitTabV2(props) {
                   borderRadius: V2_T.radius.sm,
                   background: V2_T.surface.panel2,
                   color: V2_T.text.primary,
-                  fontSize: V2_T.font.meta,
+                  fontSize: v2fs(V2_T.font.meta),
                   flex: '0 0 auto',
                 }),
               },
@@ -3264,14 +3264,14 @@ function HabitTabV2(props) {
               { style: { flex: '1 1 200px', minWidth: 0 } },
               h(
                 'div',
-                { style: { fontSize: V2_T.font.meta, fontWeight: 600, color: V2_T.text.primary, lineHeight: '18px' } },
+                { style: { fontSize: v2fs(V2_T.font.meta), fontWeight: 600, color: V2_T.text.primary, lineHeight: '18px' } },
                 dayLabel,
               ),
               h(
                 'div',
                 {
                   style: {
-                    fontSize: V2_T.font.caption,
+                    fontSize: v2fs(V2_T.font.caption),
                     color: selectedRecord ? habitToneColor(habitStatusTone(selectedRecord.status)) : V2_T.text.tertiary,
                     marginTop: 2,
                     lineHeight: '16px',
@@ -3325,7 +3325,7 @@ function HabitTabV2(props) {
                   borderRadius: V2_T.radius.sm,
                   background: V2_T.surface.panel2,
                   color: V2_T.text.primary,
-                  fontSize: V2_T.font.caption,
+                  fontSize: v2fs(V2_T.font.caption),
                   gap: 4,
                 }),
               },
@@ -3384,7 +3384,7 @@ function HabitTabV2(props) {
               { style: { display: 'flex', alignItems: 'center', gap: 2 } },
               h(
                 'div',
-                { style: { flex: '1 1 auto', fontSize: V2_T.font.meta, fontWeight: 600, color: V2_T.text.primary, lineHeight: '18px' } },
+                { style: { flex: '1 1 auto', fontSize: v2fs(V2_T.font.meta), fontWeight: 600, color: V2_T.text.primary, lineHeight: '18px' } },
                 '打卡日历',
               ),
               h(
@@ -3403,7 +3403,7 @@ function HabitTabV2(props) {
                 'div',
                 {
                   style: {
-                    fontSize: V2_T.font.meta,
+                    fontSize: v2fs(V2_T.font.meta),
                     color: V2_T.text.secondary,
                     minWidth: 78,
                     textAlign: 'center',
@@ -3434,7 +3434,7 @@ function HabitTabV2(props) {
                         update({ monthKey: currentMonthKey, date: today })
                       },
                       style: v2BtnStyle('soft', {
-                        fontSize: V2_T.font.caption,
+                        fontSize: v2fs(V2_T.font.caption),
                         height: 24,
                         padding: '0 8px',
                         borderRadius: V2_T.radius.sm,
@@ -3468,12 +3468,12 @@ function HabitTabV2(props) {
               { style: { display: 'flex', alignItems: 'center', gap: 6 } },
               h(
                 'div',
-                { style: { flex: '1 1 auto', fontSize: V2_T.font.meta, fontWeight: 600, color: V2_T.text.primary, lineHeight: '18px' } },
+                { style: { flex: '1 1 auto', fontSize: v2fs(V2_T.font.meta), fontWeight: 600, color: V2_T.text.primary, lineHeight: '18px' } },
                 '打卡日志',
               ),
               h(
                 'span',
-                { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '16px' } },
+                { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, lineHeight: '16px' } },
                 String(logs.length) + ' 条',
               ),
               h(
@@ -3489,7 +3489,7 @@ function HabitTabV2(props) {
                     borderRadius: V2_T.radius.sm,
                     background: V2_T.surface.panel2,
                     color: V2_T.text.primary,
-                    fontSize: V2_T.font.caption,
+                    fontSize: v2fs(V2_T.font.caption),
                     gap: 3,
                   }),
                 },
@@ -3499,7 +3499,7 @@ function HabitTabV2(props) {
             ),
             h(
               'div',
-              { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, marginTop: 4, lineHeight: '16px' } },
+              { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, marginTop: 4, lineHeight: '16px' } },
               '日志依附于打卡记录：保存或删除日志不会改变打卡状态，删除日志只清空备注。',
             ),
             logs.length
@@ -3542,7 +3542,7 @@ function HabitTabV2(props) {
                         { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
                         h(
                           'span',
-                          { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '16px' } },
+                          { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, lineHeight: '16px' } },
                           habitFormatDate(item.local_date) + (item.checkin_kind === 'retro' ? ' · 补记' : ''),
                         ),
                         h('span', { style: habitChipStyle(habitStatusTone(item.status)) }, habitStatusLabel(item.status)),
@@ -3560,7 +3560,7 @@ function HabitTabV2(props) {
                               },
                               h(V2Icon, { name: 'edit', size: 12 }),
                             )
-                          : h('span', { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary } }, '仅查看'),
+                          : h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, '仅查看'),
                         editable
                           ? h(
                               'button',
@@ -3580,7 +3580,7 @@ function HabitTabV2(props) {
                         'div',
                         {
                           style: {
-                            fontSize: V2_T.font.meta,
+                            fontSize: v2fs(V2_T.font.meta),
                             color: V2_T.text.primary,
                             lineHeight: '18px',
                             whiteSpace: 'pre-wrap',
@@ -3596,7 +3596,7 @@ function HabitTabV2(props) {
                   'div',
                   {
                     style: {
-                      fontSize: V2_T.font.caption,
+                      fontSize: v2fs(V2_T.font.caption),
                       color: V2_T.text.tertiary,
                       marginTop: 8,
                       padding: 12,
@@ -3616,7 +3616,7 @@ function HabitTabV2(props) {
               'div',
               {
                 style: {
-                  fontSize: V2_T.font.meta,
+                  fontSize: v2fs(V2_T.font.meta),
                   fontWeight: 600,
                   color: V2_T.text.primary,
                   marginBottom: 6,
@@ -3642,7 +3642,7 @@ function HabitTabV2(props) {
             ),
             h(
               'div',
-              { style: { fontSize: V2_T.font.caption, color: V2_T.text.tertiary, marginTop: 8, lineHeight: '16px' } },
+              { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, marginTop: 8, lineHeight: '16px' } },
               'Host 目前不提供 icon / group 字段：图标按名称推导，列表按「当日计划 / 灵活打卡 / 已暂停」自动分组。',
             ),
           ),
