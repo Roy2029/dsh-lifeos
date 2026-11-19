@@ -81,37 +81,47 @@ LifeOS 是一个运行在 [DeepSeek Harness](https://github.com/deepseek-ai)（D
    git clone https://github.com/Roy2029/dsh-lifeos.git D:\Tools\dsh-lifeos
    ```
 
-2. 把包接入 DSH 的 profile（二选一）：
+2. 把插件登记到 DSH 的 profile（DSH 使用 pnpm workspace，profile 目录通常是 `%USERPROFILE%\.dsh\profiles\desktop`）。
 
-   **方式 A：目录联接（推荐开发/本地使用，改代码后重启即生效）**
+   编辑 profile 的 `package.json`，加入依赖与 bundle：
 
-   ```powershell
-   # 先确认 profile 目录，常见为 desktop
-   $profileDir = "$env:USERPROFILE\.dsh\profiles\desktop"
-   New-Item -ItemType Directory -Force -Path "$profileDir\node_modules" | Out-Null
-   cmd /c mklink /J "$profileDir\node_modules\dsh-lifeos" "D:\Tools\dsh-lifeos"
+   ```jsonc
+   {
+     "dependencies": {
+       // 新增：指向你的克隆目录
+       "dsh-lifeos": "link:D:/Tools/dsh-lifeos"
+     },
+     "dsh": {
+       "profile": {
+         "bundles": [
+           // ...原有 bundles...
+           "dsh-lifeos"
+         ]
+       }
+     }
+   }
    ```
 
-   macOS / Linux 用软链接：
-
-   ```bash
-   ln -s /path/to/dsh-lifeos ~/.dsh/profiles/desktop/node_modules/dsh-lifeos
-   ```
-
-   **方式 B：本地 npm 安装**
+   然后在 profile 目录安装依赖：
 
    ```powershell
    cd "$env:USERPROFILE\.dsh\profiles\desktop"
-   npm install D:\Tools\dsh-lifeos
+   pnpm install
    ```
 
-3. 重启 DSH，打开 **设置 → 插件**，启用 `dsh-lifeos`（LifeOS）。
+   > 也可以让 DSH 的插件管理器安装本地路径（`file:`/`link:` 规格）；如果你更习惯图形界面，用它安装后确认 `dsh.profile.bundles` 中出现 `dsh-lifeos` 即可。
+
+3. 重启 DSH。若插件未自动启用，打开 **设置 → 插件** 启用 `dsh-lifeos`（LifeOS）。
    - 插件通过 `dsh.bundle.patch` 注册 Host 服务、HTTP 路由、Agent 预设与侧栏入口。
    - 启用后左侧栏出现 **LifeOS** 图标，主面板即四个 Tab。
 
 4. 打开 **设置 → LifeOS** 调整默认视图/字号等；首次进入 **笔记** Tab 时按引导选择本地笔记目录。
 
 5. 验证：侧栏出现 LifeOS；四个 Tab 能读写；重启 DSH 后设置仍保留；数据目录出现 `lifeos*.json`。
+
+> 升级：`git pull` 后若 `client-v2/` 有改动，先执行 `node scripts/build-v2.mjs`，再重启 DSH。
+>
+> 卸载：从 profile `package.json` 的 `bundles` 与 `dependencies` 中移除 `dsh-lifeos`，执行 `pnpm install`，再重启 DSH。业务数据不会被删除。
 
 ### 配置项
 
@@ -125,11 +135,6 @@ LifeOS 是一个运行在 [DeepSeek Harness](https://github.com/deepseek-ai)（D
 | `clientSelfCheck` | `false` | 浏览器端自动自检（发版验收用），日常请关闭 |
 | `httpPrefix` | `/api/lifeos` | HTTP 路由前缀 |
 | `diagnosticsPath` | 插件运行目录 | 诊断 JSON 输出路径 |
-
-### 升级与卸载
-
-- **升级**：`git pull` 后重启 DSH；若 `client-v2/` 有改动，先执行 `node scripts/build-v2.mjs` 再重启。
-- **卸载**：在设置 → 插件中禁用/移除 `dsh-lifeos`，然后删除 profile 下的 `node_modules/dsh-lifeos` 链接或目录（数据不会被删除）。
 
 ## 数据与隐私
 
