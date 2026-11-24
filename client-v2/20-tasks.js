@@ -102,6 +102,143 @@ function v2ParseTarget(text, today) {
   return parsed
 }
 
+/* ═════════ 任务 Tab 页面状态（#4）：scope / 选中 / 详情 / 筛选排序 / 折叠 / 滚动 ═════════
+   单独使用 lifeos.v2.state.task，和 lifeos.v2.taskPanes（三栏宽度）、
+   lifeos.v2.settings（全局默认值）互不覆盖；任何读取失败都回退默认值。 */
+
+const V2_TASK_STATE_KEY = 'lifeos.v2.state.task'
+
+const V2_TASK_STATE_SCOPES = ['today', 'next7', 'inbox', 'done', 'trash', 'list', 'tag', 'filter']
+
+const V2_TASK_STATE_SECTIONS = ['lists', 'filters', 'tags', 'archive']
+
+function v2SanitizeTaskScope(scope) {
+  if (!scope || typeof scope !== 'object') return null
+  const kind = String(scope.kind || '')
+  if (V2_TASK_STATE_SCOPES.indexOf(kind) < 0) return null
+  const id = typeof scope.id === 'string' ? scope.id : ''
+  /* list / tag / filter 依赖 id 定位，缺 id 时回退到默认 scope，避免打开后空列表 */
+  if ((kind === 'list' || kind === 'tag' || kind === 'filter') && !id) return null
+  const next = { kind: kind }
+  if (id) next.id = id
+  if (kind === 'filter' && typeof scope.label === 'string' && scope.label) next.label = scope.label
+  return next
+}
+
+function v2ReadTaskState() {
+  const fallbackFolded = {}
+  V2_TASK_STATE_SECTIONS.forEach(function each(key) { fallbackFolded[key] = false })
+  const fallback = {
+    scope: null,
+    view: null,
+    sort: null,
+    query: '',
+    selectedId: null,
+    detailOpen: false,
+    collapsed: {},
+    leftFolded: fallbackFolded,
+    scroll: null,
+  }
+  try {
+    const raw = window.localStorage.getItem(V2_TASK_STATE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return fallback
+    const collapsed = {}
+    if (parsed.collapsed && typeof parsed.collapsed === 'object') {
+      Object.keys(parsed.collapsed).forEach(function each(key) {
+        if (parsed.collapsed[key] === true) collapsed[key] = true
+      })
+    }
+    const leftFolded = {}
+    V2_TASK_STATE_SECTIONS.forEach(function each(key) {
+      leftFolded[key] = !!(parsed.leftFolded && parsed.leftFolded[key] === true)
+    })
+    const view = parsed.view === 'board' || parsed.view === 'list' ? parsed.view : null
+    const sort = ['custom', 'created', 'date', 'priority'].indexOf(parsed.sort) >= 0 ? parsed.sort : null
+    let scroll = null
+    if (parsed.scroll && typeof parsed.scroll.key === 'string' && Number.isFinite(Number(parsed.scroll.top))) {
+      scroll = { key: parsed.scroll.key, top: Math.max(0, Math.round(Number(parsed.scroll.top))) }
+    }
+    return {
+      scope: v2SanitizeTaskScope(parsed.scope),
+      view: view,
+      sort: sort,
+      query: typeof parsed.query === 'string' ? parsed.query.slice(0, 120) : '',
+      selectedId: typeof parsed.selectedId === 'string' && parsed.selectedId ? parsed.selectedId : null,
+      detailOpen: parsed.detailOpen === true,
+      collapsed: collapsed,
+      leftFolded: leftFolded,
+      scroll: scroll,
+    }
+  } catch (error) {
+    return fallback
+  }
+}
+
+function v2WriteTaskState(snapshot) {
+  try {
+    window.localStorage.setItem(V2_TASK_STATE_KEY, JSON.stringify(snapshot))
+  } catch (error) {
+    /* localStorage 不可用 / 配额不足时静默忽略，不影响交互 */
+  }
+}
+
+/* #9：鼠标点击标题进入 inline 编辑时，按点击坐标取字符位置（键盘/按钮入口仍全选）。
+   优先使用浏览器 caretPositionFromPoint / caretRangeFromPoint；
+   不可用或坐标落在标题外时返回 null，调用方回退到“全选”。 */
+function v2CaretIndexFromPoint(element, x, y) {
+  if (!element || typeof document === 'undefined' || typeof x !== 'number' || typeof y !== 'number') return null
+  let node = null
+  let offset = 0
+  try {
+    if (typeof document.caretPositionFromPoint === 'function') {
+      const position = document.caretPositionFromPoint(x, y)
+      if (position) {
+        node = position.offsetNode
+        offset = position.offset
+      }
+    } else if (typeof document.caretRangeFromPoint === 'function') {
+      const range = document.caretRangeFromPoint(x, y)
+      if (range) {
+        node = range.startContainer
+        offset = range.startOffset
+      }
+    }
+  } catch (error) {
+    return null
+  }
+  if (!node || !element.contains(node)) return null
+  try {
+    const measure = document.createRange()
+    measure.selectNodeContents(element)
+    measure.setEnd(node, offset)
+    return measure.toString().length
+  } catch (error) {
+    return null
+  }
+}
+
+/* #17：多选模式的行尾选择框（方形，和圆角完成框明显区分） */
+function v2SelectSquareStyle(selected) {
+  return {
+    width: 18,
+    height: 18,
+    minWidth: 18,
+    borderRadius: 4,
+    border: '1.5px solid ' + (selected ? V2_T.accent.base : V2_T.border.strong),
+    background: selected ? V2_T.accent.soft : 'transparent',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    padding: 0,
+    flex: '0 0 auto',
+    color: V2_T.accent.base,
+    transition: 'border-color 120ms ease, background 120ms ease',
+  }
+}
+
 function TaskArowV2(props) {
   const task = props.task
   const selected = props.selected
@@ -110,6 +247,8 @@ function TaskArowV2(props) {
   const doneChild = props.doneChild
   /* 视觉变体：看板列中的任务项用浮起卡片；列表内仍是扁平行（仅样式差异，无行为差异） */
   const carded = props.card === true
+  /* #17：多选模式隐藏行首完成框，改用行尾方形选择框，避免误点完成 */
+  const selectMode = props.selectMode === true
   const repeatRule = v2RepeatRuleOf(task)
   const [draft, setDraft] = useState(task.title)
   /* 拖拽插入位置提示：'' | 'before' | 'after' */
@@ -121,10 +260,22 @@ function TaskArowV2(props) {
   }, [task.title])
 
   useEffect(function focusEditor() {
-    if (editing && inputRef.current) {
-      inputRef.current.focus()
-      inputRef.current.select()
+    if (!editing || !inputRef.current) return
+    const input = inputRef.current
+    input.focus()
+    /* #9：鼠标点击标题进入编辑时把光标落在点击处；
+       键盘/按钮入口没有 caret，保持原来的全选行为。 */
+    const caret = typeof props.editCaret === 'number' ? props.editCaret : -1
+    if (caret >= 0) {
+      const position = Math.min(caret, String(draft).length)
+      try {
+        input.setSelectionRange(position, position)
+        return
+      } catch (error) {
+        /* 个别浏览器不支持对当前输入类型 setSelectionRange，回退全选 */
+      }
     }
+    input.select()
   }, [editing])
 
   /* 拖拽可能在行外松手（窗口/其它容器/取消），dragend 不一定经过本行；
@@ -153,7 +304,7 @@ function TaskArowV2(props) {
           margin: '2px 4px',
         }),
       },
-      h('button', { type: 'button', onClick: props.onToggle, style: v2CheckStyle(task) }),
+      props.selectMode ? null : h('button', { type: 'button', onClick: props.onToggle, style: v2CheckStyle(task) }),
       h('input', {
         ref: inputRef,
         value: draft,
@@ -236,15 +387,17 @@ function TaskArowV2(props) {
       onMouseEnter: function enter(e) {
         e.currentTarget.style.background = selected || carded ? V2_T.surface.panel3 : V2_T.surface.panel2
         const actions = e.currentTarget.querySelector('.v2-row-actions')
-        if (actions) actions.style.opacity = '0.75'
+        if (actions) actions.style.opacity = selectMode ? '1' : '0.75'
       },
       onMouseLeave: function leave(e) {
         e.currentTarget.style.background = selected ? V2_T.surface.panel3 : carded ? V2_T.surface.panel2 : 'transparent'
         const actions = e.currentTarget.querySelector('.v2-row-actions')
-        if (actions) actions.style.opacity = '0.4'
+        if (actions) actions.style.opacity = selectMode ? '1' : '0.4'
       },
     },
-    h('button', {
+    selectMode
+      ? null
+      : h('button', {
       type: 'button',
       title: v2TaskCompleted(task) ? '取消完成' : '标记完成',
       onClick: function onClick(e) {
@@ -261,8 +414,11 @@ function TaskArowV2(props) {
         { style: { display: 'flex', alignItems: 'center', gap: 6 } },
         h('span', {
           onClick: function onTitleClick(e) {
+            /* #17：多选模式下点击标题交给整行选择，不进入 inline 编辑 */
+            if (selectMode) return
             e.stopPropagation()
-            props.onStartEdit(task)
+            /* 只有鼠标点击标题才计算光标位置；onStartEdit 的第二参为 null 时父层回退全选 */
+            props.onStartEdit(task, v2CaretIndexFromPoint(e.currentTarget, e.clientX, e.clientY))
           },
           style: {
             fontSize: v2fs(13.5),
@@ -329,8 +485,23 @@ function TaskArowV2(props) {
       'div',
       {
         className: 'v2-row-actions',
-        style: { display: 'flex', alignItems: 'center', gap: 2, opacity: 0.4, transition: 'opacity 120ms ease' },
+        style: { display: 'flex', alignItems: 'center', gap: 2, opacity: selectMode ? 1 : 0.4, transition: 'opacity 120ms ease' },
       },
+      selectMode
+        ? h('button', {
+            type: 'button',
+            title: selected ? '取消选择' : '选择任务',
+            'aria-pressed': selected ? 'true' : 'false',
+            'aria-label': '选择任务',
+            onClick: function onSelectClick(e) {
+              e.stopPropagation()
+              if (props.onSelectToggle) props.onSelectToggle(task)
+            },
+            onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+            onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            style: v2SelectSquareStyle(selected),
+          }, selected ? h(V2Icon, { name: 'check', size: 11, color: V2_T.accent.base, strokeWidth: 3 }) : null)
+        : null,
       h('button', {
         type: 'button',
         title: '更多',
@@ -429,6 +600,9 @@ function TaskTabV2(props) {
 
   const [state, setState] = useState(function initial() {
     const prefs = v2ReadSettings()
+    /* #4：先恢复上次的 scope / 折叠 / 搜索词；view/sort 仍以全局默认值为初值，
+       mount 后再用 lifeos.v2.state.task 覆盖（避免闪一下默认视图）。 */
+    const saved = v2ReadTaskState()
     return {
       loading: true,
       error: null,
@@ -437,13 +611,16 @@ function TaskTabV2(props) {
       trash: [],
       lists: [],
       groups: [],
-      scope: { kind: 'today' },
+      scope: saved.scope || { kind: 'today' },
       view: prefs.taskView === 'board' ? 'board' : 'list',
       sort: prefs.taskSort || 'custom',
       selectedId: null,
       detail: null,
       editingId: null,
-      collapsed: {},
+      collapsed: saved.collapsed,
+      leftFolded: saved.leftFolded,
+      query: saved.query,
+      searchOpen: saved.query.length > 0,
       quickAdd: '',
       quickAddHint: '',
       busy: false,
@@ -478,11 +655,71 @@ function TaskTabV2(props) {
   /* 详情标题的“已提交值”：state.detail 会随输入实时变化，
      不能再用 task.title 判断是否有改动，否则永远判定为“未修改”而不落库。 */
   const detailTitleRef = useRef({ id: null, title: '' })
+  const detailNotesRef = useRef({ id: null, notes: '' })
+  /* #9：进入 inline 编辑时的点击光标位置（-1 表示键盘/按钮入口 → 全选） */
+  const editCaretRef = useRef(-1)
+  /* #13：搜索输入框与“用户主动打开搜索”的聚焦标记 */
+  const searchInputRef = useRef(null)
+  const searchFocusRef = useRef(false)
+  /* #7：分组内“添加任务”输入框，创建后保持焦点 */
+  const groupAddInputRef = useRef(null)
+  /* #4：列表滚动容器 + 滚动位置持久化 */
+  const listScrollRef = useRef(null)
+  const lastScrollRef = useRef(0)
+  const restoredScrollRef = useRef('')
+  const pendingScrollRef = useRef(null)
+  const scrollPersistRef = useRef(null)
+  const hydratedRef = useRef(false)
+  const restoreDetailRef = useRef(null)
   stateRef.current = state
   panesRef.current = panes
 
   function update(patch) {
     setState(function merge(prev) { return Object.assign({}, prev, patch) })
+  }
+
+  /* #4：把当前页面状态写回 lifeos.v2.state.task（容错在 v2WriteTaskState 内） */
+  function persistTaskStateNow() {
+    if (!hydratedRef.current) return
+    const current = stateRef.current
+    v2WriteTaskState({
+      scope: current.scope,
+      view: current.view,
+      sort: current.sort,
+      query: current.query,
+      selectedId: current.selectionMode ? null : current.selectedId,
+      detailOpen: !current.selectionMode && !!current.detail,
+      collapsed: current.collapsed,
+      leftFolded: current.leftFolded,
+      scroll: { key: scopeKey(current.scope), top: Math.max(0, Math.round(lastScrollRef.current || 0)) },
+    })
+  }
+
+  /* #2：多选开关统一入口——进入时清掉单选高亮/详情/编辑态，退出时清空选中集合；
+     行高亮只由 selectedIds 驱动，避免旧的 selectedId 蓝色高亮残留在多选模式里。 */
+  function changeSelectionMode(next) {
+    if (!next) {
+      update({ selectionMode: false, selectedIds: [] })
+      return
+    }
+    update({ selectionMode: true, selectedIds: [], selectedId: null, detail: null, editingId: null })
+  }
+
+  /* #4：列表滚动时记录位置（250ms 防抖落盘） */
+  function onListScroll(event) {
+    lastScrollRef.current = event.currentTarget.scrollTop
+    if (scrollPersistRef.current) return
+    scrollPersistRef.current = window.setTimeout(function flushScroll() {
+      scrollPersistRef.current = null
+      persistTaskStateNow()
+    }, 250)
+  }
+
+  /* #4：左栏四个分区（清单/过滤器/标签/收纳区）折叠状态 */
+  function toggleLeftSection(key) {
+    const next = Object.assign({}, stateRef.current.leftFolded)
+    next[key] = !next[key]
+    update({ leftFolded: next })
   }
 
   async function safeRequest(path, options) {
@@ -571,7 +808,42 @@ function TaskTabV2(props) {
   }
 
   useEffect(function mount() {
-    reload(true)
+    /* #4：恢复上次的任务页状态（view/sort 覆盖全局默认值，scope 已在 initial 中恢复） */
+    const saved = v2ReadTaskState()
+    const patch = {}
+    if (saved.view) patch.view = saved.view
+    if (saved.sort) patch.sort = saved.sort
+    if (Object.keys(patch).length) update(patch)
+    pendingScrollRef.current = saved.scroll
+    restoreDetailRef.current = saved.selectedId && saved.detailOpen ? saved.selectedId : null
+    reload(true).then(function afterFirstLoad(payload) {
+      if (payload) {
+        /* 用 payload 而不是 stateRef.current：此时 reload 的 setState 还没渲染，stateRef 可能是旧值 */
+        const scope = stateRef.current.scope || { kind: 'today' }
+        const lists = payload.lists || []
+        const tags = payload.tags || []
+        const scopeAlive = scope.kind === 'list'
+          ? lists.some(function hasList(list) { return list.id === scope.id })
+          : scope.kind === 'tag'
+            ? tags.some(function hasTag(tag) { return tag.id === scope.id })
+            : true
+        if (!scopeAlive) {
+          update({ scope: { kind: 'today' }, detail: null, selectedId: null })
+        } else {
+          const wantedId = restoreDetailRef.current
+          restoreDetailRef.current = null
+          if (wantedId) {
+            const found = v2FindTaskById(payload.tasks || [], wantedId) || v2FindTaskById(payload.done || [], wantedId) || v2FindTaskById(payload.trash || [], wantedId)
+            if (found) {
+              detailTitleRef.current = { id: found.id, title: found.title }
+              detailNotesRef.current = { id: found.id, notes: found.notes || '' }
+              update({ selectedId: found.id, detail: found })
+            }
+          }
+        }
+      }
+      hydratedRef.current = true
+    })
   }, [])
 
   useEffect(function refreshOnSignal() {
@@ -581,6 +853,73 @@ function TaskTabV2(props) {
   useEffect(function focusQuickAdd() {
     if (quickAddSignal > 0 && inputRef.current) inputRef.current.focus()
   }, [quickAddSignal])
+
+  /* #13：搜索框展开后聚焦 */
+  useEffect(function focusSearchInput() {
+    if (!state.searchOpen || !searchFocusRef.current) return
+    searchFocusRef.current = false
+    if (searchInputRef.current) {
+      searchInputRef.current.focus()
+      try {
+        searchInputRef.current.select()
+      } catch (error) {
+        /* 选择失败不影响输入 */
+      }
+    }
+  }, [state.searchOpen])
+
+  /* #4：列表滚动位置恢复（切换 scope / 首次加载后各执行一次） */
+  useEffect(function restoreScrollPosition() {
+    if (state.loading) return
+    const el = listScrollRef.current
+    if (!el) return
+    const key = scopeKey(state.scope)
+    if (restoredScrollRef.current === key) return
+    restoredScrollRef.current = key
+    const saved = pendingScrollRef.current
+    pendingScrollRef.current = null
+    el.scrollTop = saved && saved.key === key ? saved.top : 0
+    lastScrollRef.current = el.scrollTop
+  }, [state.loading, state.scope])
+
+  /* #4：状态变化后落盘（hydrated 之后才写，避免覆盖已保存的选中任务） */
+  useEffect(function persistTaskState() {
+    persistTaskStateNow()
+  }, [state.scope, state.view, state.sort, state.query, state.selectedId, state.detail, state.collapsed, state.leftFolded, state.selectionMode])
+
+  /* #4：卸载时清掉滚动防抖定时器，并把最后一次状态落盘（切 Tab 不丢滚动位置） */
+  useEffect(function cleanupScrollTimer() {
+    return function cleanup() {
+      if (scrollPersistRef.current) {
+        window.clearTimeout(scrollPersistRef.current)
+        scrollPersistRef.current = null
+      }
+      persistTaskStateNow()
+    }
+  }, [])
+
+  /* #13："/" 快捷键展开并聚焦左栏搜索框 */
+  useEffect(function searchShortcut() {
+    function onKeyDown(event) {
+      if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return
+      if (modalRef.current) return
+      const target = event.target
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) return
+      if (stateRef.current.editingId) return
+      event.preventDefault()
+      if (!narrow && panesRef.current.listCollapsed) {
+        savePanes(Object.assign({}, panesRef.current, { listCollapsed: false }))
+      }
+      searchFocusRef.current = true
+      update({ searchOpen: true })
+      /* 搜索框已经展开时 effect 不会重跑，这里直接聚焦 */
+      if (searchInputRef.current) searchInputRef.current.focus()
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return function cleanup() {
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [narrow])
 
   /* 清单/分组拖拽在窗口外松手时 dragleave 不会触发，统一在 dragend 清空插入线 */
   useEffect(function clearPaneDropHintsOnDragEnd() {
@@ -611,7 +950,13 @@ function TaskTabV2(props) {
       }
       if (current.selectionMode) {
         event.preventDefault()
-        update({ selectionMode: false, selectedIds: [] })
+        changeSelectionMode(false)
+        return
+      }
+      /* #13：Escape 关闭左栏搜索框（焦点在搜索框内时由输入框自身处理） */
+      if (current.searchOpen) {
+        event.preventDefault()
+        update({ searchOpen: false, query: '' })
       }
     }
     document.addEventListener('keydown', onKeyDown, true)
@@ -789,7 +1134,8 @@ function TaskTabV2(props) {
   }
 
   function selectedTasksNow() {
-    const all = state.tasks.concat(state.done)
+    /* 垃圾桶批量（恢复/彻底删除）需要取到 trash 里的任务；非 trash scope 时 trash 为空，无副作用 */
+    const all = state.tasks.concat(state.done, state.trash)
     return all.filter(function f(task) { return state.selectedIds.indexOf(task.id) >= 0 })
   }
 
@@ -798,7 +1144,7 @@ function TaskTabV2(props) {
     if (!tasks.length) return
     runMutation(async function doBatch() {
       for (const task of tasks) await worker(task)
-      update({ selectionMode: false, selectedIds: [] })
+      changeSelectionMode(false)
     }, label)
   }
 
@@ -830,6 +1176,75 @@ function TaskTabV2(props) {
         body: JSON.stringify(Object.assign({ expectedRev: task.rev }, patch)),
       })
     })
+  }
+
+  /* #5：垃圾桶批量恢复——Host 无任务 batch 端点，逐条 POST /tasks/:id/restore */
+  function batchRestore() {
+    const count = selectedTasksNow().length
+    batchRun('已恢复 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id) + '/restore', {
+        method: 'POST',
+        body: JSON.stringify({ expectedRev: task.rev }),
+      })
+    })
+  }
+
+  /* #5：垃圾桶批量彻底删除——逐条 DELETE /tasks/:id?purge=1 */
+  function batchPurge() {
+    const count = selectedTasksNow().length
+    batchRun('已彻底删除 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id) + '?purge=1&expectedRev=' + encodeURIComponent(task.rev), { method: 'DELETE' })
+    })
+  }
+
+  /* #2：批量移到分组——Host 没有任务 batch 端点，逐条 PATCH listId+groupId。
+     Host 会校验分组必须属于目标清单，所以必须同时给 listId（不能只给 groupId）。 */
+  function batchMoveToGroup(listId, groupId) {
+    const count = selectedTasksNow().length
+    const targetList = listId || null
+    batchRun('已移动 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRev: task.rev, listId: targetList, groupId: groupId || null }),
+      })
+    })
+  }
+
+  /* #2：批量移出分组——保留任务当前所在清单，只清空 groupId */
+  function batchClearGroup() {
+    const count = selectedTasksNow().length
+    batchRun('已移出分组 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRev: task.rev, groupId: null }),
+      })
+    })
+  }
+
+  function openBatchGroupMenu(event) {
+    function groupListId(group) { return (group && (group.listId || group.list_id)) || null }
+    const items = [{ label: '移出分组（保留清单）', icon: 'folder', onClick: batchClearGroup }]
+    const ordered = []
+    state.lists.forEach(function eachList(list) {
+      state.groups.forEach(function eachGroup(group) {
+        if (groupListId(group) === list.id && ordered.indexOf(group) < 0) ordered.push(group)
+      })
+    })
+    state.groups.forEach(function eachOrphan(group) {
+      if (ordered.indexOf(group) < 0 && groupListId(group)) ordered.push(group)
+    })
+    ordered.forEach(function each(group) {
+      const targetList = groupListId(group)
+      items.push({
+        label: listNameOf(targetList) + ' / ' + group.name,
+        icon: 'folder',
+        onClick: function onClick() { batchMoveToGroup(targetList, group.id) },
+      })
+    })
+    items.push({ type: 'separator' })
+    items.push({ label: '取消多选', icon: 'close', onClick: function onClick() { changeSelectionMode(false) } })
+    const rect = event && event.currentTarget ? event.currentTarget.getBoundingClientRect() : null
+    openV2PlainMenu(rect ? Math.round(rect.left) : 220, rect ? Math.round(rect.bottom + 4) : 220, items)
   }
 
   function openBatchTagMenu() {
@@ -866,13 +1281,36 @@ function TaskTabV2(props) {
           body: JSON.stringify({ expectedRev: task.rev, tagIds: ids }),
         })
       }
-      update({ selectionMode: false, selectedIds: [] })
+      changeSelectionMode(false)
     }, '已添加标签')
   }
 
   function renderSelectionBar() {
     if (!state.selectionMode) return null
     const count = state.selectedIds.length
+    const trashMode = state.scope.kind === 'trash'
+    const soft = { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }
+    const ghost = { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm }
+    const buttons = []
+    if (trashMode) {
+      /* #5：垃圾桶里只有“恢复 / 彻底删除”是有意义的批量操作 */
+      buttons.push(h('button', { type: 'button', onClick: batchRestore, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '恢复'))
+      buttons.push(h('button', { type: 'button', onClick: batchPurge, style: v2BtnStyle('ghost', Object.assign({}, ghost, { color: V2_T.status.danger })) }, '彻底删除'))
+    } else {
+      buttons.push(h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '移入清单'))
+      buttons.push(h('button', {
+        type: 'button',
+        onClick: function onClick(event) { openBatchGroupMenu(event) },
+        style: v2BtnStyle('soft', Object.assign({}, soft)),
+      }, '移到分组'))
+      buttons.push(h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '添加标签'))
+      buttons.push(h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', Object.assign({}, ghost, { color: V2_T.status.danger })) }, '删除'))
+    }
+    buttons.push(h('button', {
+      type: 'button',
+      onClick: function onClick() { changeSelectionMode(false) },
+      style: v2BtnStyle('ghost', Object.assign({}, ghost)),
+    }, '取消'))
     return h(
       'div',
       {
@@ -885,16 +1323,8 @@ function TaskTabV2(props) {
           background: V2_T.surface.shell,
         },
       },
-      h('span', { style: { fontSize: v2fs(12), color: V2_T.text.secondary } }, count ? '已选 ' + count + ' 项' : '点击任务以多选'),
-      h('div', { style: { flex: '1 1 auto' } }),
-      h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '移入清单'),
-      h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '添加标签'),
-      h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, color: V2_T.status.danger }) }, '删除'),
-      h('button', {
-        type: 'button',
-        onClick: function onClick() { update({ selectionMode: false, selectedIds: [] }) },
-        style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm }),
-      }, '取消'),
+      [h('span', { style: { fontSize: v2fs(12), color: V2_T.text.secondary } }, count ? '已选 ' + count + ' 项' : '点击任务以多选'),
+        h('div', { style: { flex: '1 1 auto' } })].concat(buttons),
     )
   }
 
@@ -970,9 +1400,10 @@ function TaskTabV2(props) {
     }, '已彻底删除')
   }
 
-  async function createTask(input, extra) {
+  async function createTask(input, extra, options) {
     const text = String(input || '').trim()
     if (!text) return
+    const opts = options || {}
     const parsed = v2ParseTarget(text, todayIso())
     const body = Object.assign({
       title: parsed.title || text,
@@ -982,10 +1413,13 @@ function TaskTabV2(props) {
       await apiRequest('/tasks', { method: 'POST', body: JSON.stringify(body) })
       update({ quickAdd: '', quickAddHint: '' })
       await reload(false)
-      if (inputRef.current) inputRef.current.focus()
+      /* #7：分组内创建由调用方接管焦点，避免抢回主快速添加框 */
+      if (opts.focus !== false && inputRef.current) inputRef.current.focus()
       runtime.toast('success', '已添加任务')
+      return true
     } catch (error) {
       runtime.toast('error', '创建失败：' + errorText(error))
+      return false
     }
   }
 
@@ -1040,6 +1474,7 @@ function TaskTabV2(props) {
 
   function openDetail(task) {
     detailTitleRef.current = { id: task.id, title: task.title }
+    detailNotesRef.current = { id: task.id, notes: task.notes || '' }
     update({ selectedId: task.id, detail: task })
   }
 
@@ -1536,12 +1971,37 @@ function TaskTabV2(props) {
     }))
   }
 
+  /* #7：分组内连续创建——算一个排到该分组末尾的 sortOrder（0..1e9 整数） */
+  function nextGroupSortOrder(listId, groupId) {
+    const targetList = listId || null
+    const targetGroup = groupId || null
+    let max = 0
+    state.tasks.concat(state.done).forEach(function scan(task) {
+      if (v2TaskParentId(task)) return
+      if ((v2TaskListId(task) || null) !== targetList) return
+      if ((v2TaskGroupId(task) || null) !== targetGroup) return
+      const order = Number(task.sortOrder)
+      if (Number.isFinite(order) && order > max) max = order
+    })
+    return Math.min(TASK_SORT_MAX, max + TASK_SORT_STEP)
+  }
+
   function submitGroupAdd() {
     const target = state.groupAdd
     const text = String(state.groupAddText || '').trim()
     if (!target || !text) return
-    createTask(text, { listId: target.listId, groupId: target.groupId || null })
+    const listId = target.listId || null
+    const groupId = target.groupId || null
+    /* 先清空输入框：任务创建（含 reload）期间再按回车不会重复提交同一标题 */
     update({ groupAddText: '' })
+    /* sortOrder 让新任务落到该分组末尾；focus:false 避免 createTask 抢焦点回主快速添加框 */
+    createTask(text, { listId: listId, groupId: groupId, sortOrder: nextGroupSortOrder(listId, groupId) }, { focus: false }).then(function afterCreate(created) {
+      /* 创建失败时把标题放回输入框，避免用户输入丢失 */
+      if (created === false) update({ groupAddText: text })
+      const el = groupAddInputRef.current
+      if (el) el.focus()
+      else if (inputRef.current) inputRef.current.focus()
+    })
   }
 
   /* ═════════ 计数（与列表同谓词：顶层 + 未取消） ═════════ */
@@ -2031,6 +2491,50 @@ function TaskTabV2(props) {
       )
     }
 
+    /* #27：左栏分区标题——可点击折叠/展开，状态持久化在 lifeos.v2.state.task */
+    function sectionHeader(key, title, action) {
+      const folded = !!(state.leftFolded && state.leftFolded[key])
+      return h(
+        'div',
+        { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        h('button', {
+          type: 'button',
+          'aria-expanded': folded ? 'false' : 'true',
+          'aria-controls': 'v2-left-section-' + key,
+          onClick: function onClick() { toggleLeftSection(key) },
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            flex: '1 1 auto',
+            minWidth: 0,
+            padding: 0,
+            border: 'none',
+            background: 'transparent',
+            color: V2_T.text.tertiary,
+            fontFamily: COLORS.fontFamily,
+            fontSize: v2fs(V2_T.font.caption),
+            fontWeight: 600,
+            letterSpacing: '0.02em',
+            textAlign: 'left',
+            cursor: 'pointer',
+          },
+          onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+          onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+        },
+        h(V2Icon, { name: folded ? 'chevR' : 'chevD', size: 12 }),
+        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
+        ),
+        action || null,
+      )
+    }
+
+    function sectionBody(key, children) {
+      const folded = !!(state.leftFolded && state.leftFolded[key])
+      if (folded) return null
+      return h('div', { id: 'v2-left-section-' + key }, children)
+    }
+
     if (!narrow && panes.listCollapsed) {
       return h(
         'div',
@@ -2094,31 +2598,74 @@ function TaskTabV2(props) {
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 12px 8px' } },
         h('span', { style: { fontSize: v2fs(12), fontWeight: 600, color: V2_T.text.secondary, letterSpacing: '0.02em' } }, '任务'),
-        narrow
-          ? null
-          : h('button', {
-              type: 'button',
-              title: '收起清单栏',
-              onClick: toggleListPane,
-              style: v2IconBtnStyle({ width: 18, height: 18 }),
-            }, h(V2Icon, { name: 'chevL', size: 12 })),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 2 } },
+          /* #13：搜索入口放在左栏清单区首行（放大镜展开输入框，"/" 快捷键同样生效） */
+          h('button', {
+            type: 'button',
+            title: '搜索任务（/）',
+            'aria-label': '搜索任务',
+            'aria-expanded': state.searchOpen ? 'true' : 'false',
+            onClick: function onClick() {
+              searchFocusRef.current = true
+              update({ searchOpen: true })
+              /* 搜索框已经展开时，点击放大镜直接聚焦；首次展开由 focusSearchInput effect 负责 */
+              if (searchInputRef.current) searchInputRef.current.focus()
+            },
+            style: v2IconBtnStyle({ width: 18, height: 18 }),
+          }, h(V2Icon, { name: 'search', size: 13 })),
+          narrow
+            ? null
+            : h('button', {
+                type: 'button',
+                title: '收起清单栏',
+                onClick: toggleListPane,
+                style: v2IconBtnStyle({ width: 18, height: 18 }),
+              }, h(V2Icon, { name: 'chevL', size: 12 })),
+        ),
       ),
+      state.searchOpen
+        ? h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 8px' } },
+            h(V2Icon, { name: 'search', size: 13, color: V2_T.text.tertiary }),
+            h('input', {
+              ref: searchInputRef,
+              value: state.query,
+              placeholder: '搜索任务标题或备注',
+              'aria-label': '搜索任务',
+              onChange: function onChange(e) { update({ query: e.target.value }) },
+              onKeyDown: function onKeyDown(e) {
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  update({ searchOpen: false, query: '' })
+                }
+              },
+              style: v2InputStyle({ fontSize: v2fs(12), padding: '4px 8px', height: 28, flex: '1 1 auto', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+            }),
+            h('button', {
+              type: 'button',
+              title: '关闭搜索',
+              'aria-label': '关闭搜索',
+              onClick: function onClick() { update({ searchOpen: false, query: '' }) },
+              style: v2IconBtnStyle({ width: 20, height: 20 }),
+            }, h(V2Icon, { name: 'close', size: 12 })),
+          )
+        : null,
       h(
         'div',
         { style: { flex: '1 1 auto', overflowY: 'auto', padding: '2px 8px 16px', minHeight: 0 } },
         shortcuts.map(function mapShortcut(item) {
           return navItem({ kind: item.kind }, item.label, scopeCountOf({ kind: item.kind }), item.icon)
         }),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '清单'),
-          h('button', {
-            type: 'button',
-            onClick: function onClick() { update({ newListOpen: true, newListName: '' }) },
-            style: v2IconBtnStyle({ width: 20, height: 20 }),
-          }, h(V2Icon, { name: 'plus', size: 12 })),
-        ),
+        sectionHeader('lists', '清单', h('button', {
+          type: 'button',
+          title: '新建清单',
+          onClick: function onClick() { update({ newListOpen: true, newListName: '' }) },
+          style: v2IconBtnStyle({ width: 20, height: 20 }),
+        }, h(V2Icon, { name: 'plus', size: 12 }))),
+        sectionBody('lists', [
         state.newListOpen
           ? h(
               'div',
@@ -2152,6 +2699,7 @@ function TaskTabV2(props) {
               h('input', {
                 autoFocus: true,
                 value: state.renameListText,
+                onFocus: function onFocus(e) { e.currentTarget.select() },
                 onChange: function onChange(e) { update({ renameListText: e.target.value }) },
                 onKeyDown: function onKeyDown(e) {
                   if (e.key === 'Enter') {
@@ -2233,37 +2781,31 @@ function TaskTabV2(props) {
             }, h(V2Icon, { name: 'more', size: 12 })),
           )
         }),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '过滤器'),
-        ),
-        navItem({ kind: 'filter', id: 'high', label: '本周高优先级' }, '本周高优先级', scopeCountOf({ kind: 'filter', id: 'high', label: '本周高优先级' }), 'filter'),
-        navItem({ kind: 'filter', id: 'meeting', label: '会议相关' }, '会议相关', scopeCountOf({ kind: 'filter', id: 'meeting', label: '会议相关' }), 'filter'),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '标签'),
-          h('button', {
-            type: 'button',
-            title: '编辑标签',
-            onClick: function onClick() { openTagEditor() },
-            style: v2IconBtnStyle({ width: 20, height: 20 }),
-          }, h(V2Icon, { name: 'settings', size: 12 })),
-        ),
-        state.tags.length
-          ? state.tags.map(function renderTag(tag) {
-              const count = scopeCountOf({ kind: 'tag', id: tag.id })
-              return navItem({ kind: 'tag', id: tag.id }, tag.name, count, 'tag')
-            })
-          : h('div', { style: { padding: '2px 10px', fontSize: v2fs(11), color: V2.faint } }, '暂无标签'),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '收纳区'),
-        ),
-        navItem({ kind: 'done' }, '已完成', state.done.length, 'done'),
-        navItem({ kind: 'trash' }, '垃圾桶', state.trash.length, 'trash'),
+        ]),
+        sectionHeader('filters', '过滤器'),
+        sectionBody('filters', [
+          navItem({ kind: 'filter', id: 'high', label: '本周高优先级' }, '本周高优先级', scopeCountOf({ kind: 'filter', id: 'high', label: '本周高优先级' }), 'filter'),
+          navItem({ kind: 'filter', id: 'meeting', label: '会议相关' }, '会议相关', scopeCountOf({ kind: 'filter', id: 'meeting', label: '会议相关' }), 'filter'),
+        ]),
+        sectionHeader('tags', '标签', h('button', {
+          type: 'button',
+          title: '编辑标签',
+          onClick: function onClick() { openTagEditor() },
+          style: v2IconBtnStyle({ width: 20, height: 20 }),
+        }, h(V2Icon, { name: 'settings', size: 12 }))),
+        sectionBody('tags', [
+          state.tags.length
+            ? state.tags.map(function renderTag(tag) {
+                const count = scopeCountOf({ kind: 'tag', id: tag.id })
+                return navItem({ kind: 'tag', id: tag.id }, tag.name, count, 'tag')
+              })
+            : h('div', { style: { padding: '2px 10px', fontSize: v2fs(11), color: V2.faint } }, '暂无标签'),
+        ]),
+        sectionHeader('archive', '收纳区'),
+        sectionBody('archive', [
+          navItem({ kind: 'done' }, '已完成', state.done.length, 'done'),
+          navItem({ kind: 'trash' }, '垃圾桶', state.trash.length, 'trash'),
+        ]),
       ),
     )
   }
@@ -2280,8 +2822,9 @@ function TaskTabV2(props) {
       return h(Banner, { tone: 'error' }, '加载失败：' + state.error)
     }
     const flatScope = state.scope.kind === 'done' || state.scope.kind === 'trash'
+    const query = String(state.query || '').trim()
     const visible = tasks
-      .filter(function filter(task) { return v2TaskMatchesText(task, '') })
+      .filter(function filter(task) { return v2TaskMatchesText(task, query) })
       .filter(function filter(task) {
         if (flatScope) return true
         return !v2TaskParentId(task)
@@ -2290,8 +2833,15 @@ function TaskTabV2(props) {
       const listScope = state.scope.kind === 'list'
       if (listScope) {
         /* 清单为空也要渲染分组列表与“新建分组”行：
-           否则空清单只剩快速添加一个入口，无法在此清单建分组 */
-        return renderGroupedList([])
+           否则空清单只剩快速添加一个入口，无法在此清单建分组；
+           搜索无结果时不渲染分组（避免误以为有匹配任务）。 */
+        if (!query) return renderGroupedList([])
+      }
+      if (query) {
+        return h(EmptyState, {
+          title: '没有匹配的任务',
+          hint: '换个关键词，或清空搜索框',
+        })
       }
       return h(EmptyState, {
         title: state.scope.kind === 'trash' ? '垃圾桶是空的' : '这里还没有任务',
@@ -2406,6 +2956,8 @@ function TaskTabV2(props) {
               ? h('input', {
                   autoFocus: true,
                   value: state.renameGroupText,
+                  /* 按钮/菜单入口进入重命名：保持全选（与任务名点击定位光标的语义区分） */
+                  onFocus: function onFocus(e) { e.currentTarget.select() },
                   onChange: function onChange(e) { update({ renameGroupText: e.target.value }) },
                   onKeyDown: function onKeyDown(e) {
                     if (e.key === 'Enter') {
@@ -2447,6 +2999,7 @@ function TaskTabV2(props) {
                 'div',
                 { style: { display: 'flex', gap: 4, padding: '4px 12px 6px' } },
                 h('input', {
+                  ref: groupAddInputRef,
                   autoFocus: true,
                   value: state.groupAddText,
                   placeholder: '任务标题，回车创建',
@@ -2639,8 +3192,12 @@ function TaskTabV2(props) {
     const row = h(TaskArowV2, {
       key: task.id,
       task: task,
-      selected: state.selectedId === task.id || state.selectedIds.indexOf(task.id) >= 0,
+      /* #2：多选模式下高亮只由 selectedIds 驱动，单选残留的 selectedId 不再参与 */
+      selected: state.selectionMode ? state.selectedIds.indexOf(task.id) >= 0 : state.selectedId === task.id,
+      selectMode: state.selectionMode,
       editing: state.editingId === task.id,
+      /* #9：鼠标点击标题进入编辑时按点击位置定位光标；键盘/按钮入口为 -1 → 全选 */
+      editCaret: state.editingId === task.id ? editCaretRef.current : -1,
       childCount: children.length,
       doneChild: doneChild,
       /* 看板列内用浮起卡片视觉；列表/详情内保持扁平行（仅样式变体） */
@@ -2650,7 +3207,11 @@ function TaskTabV2(props) {
       onOpen: state.selectionMode
         ? function onSelect(target) { toggleSelect(target.id) }
         : openDetail,
-      onStartEdit: function onStartEdit(target) { update({ editingId: target.id }) },
+      onSelectToggle: function onSelectToggle(target) { toggleSelect(target.id) },
+      onStartEdit: function onStartEdit(target, caret) {
+        editCaretRef.current = typeof caret === 'number' && caret >= 0 ? caret : -1
+        update({ editingId: target.id })
+      },
       onCancelEdit: function onCancelEdit() { update({ editingId: null }) },
       onCommitTitle: function onCommitTitle(title) { commitTitle(task.id, title, task.rev) },
       onMore: openTaskMenu,
@@ -2711,7 +3272,7 @@ function TaskTabV2(props) {
         h('input', {
           ref: inputRef,
           value: state.quickAdd,
-          placeholder: '添加任务，回车创建（可写“明天上午 9 点 !高”）',
+          placeholder: '添加任务，回车创建（可写“明天上午 9 点 !高”；按 N 随时聚焦到这里）',
           onChange: function onChange(e) {
             const value = e.target.value
             const parsed = value.trim() ? v2ParseTarget(value, todayIso()) : null
@@ -2738,7 +3299,7 @@ function TaskTabV2(props) {
         }),
         state.quickAddHint
           ? h('span', { style: { fontSize: v2fs(11), color: V2_T.accent.base, whiteSpace: 'nowrap' } }, state.quickAddHint)
-          : h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, whiteSpace: 'nowrap' } }, 'N 聚焦'),
+          : null,
       ),
     )
   }
@@ -2748,7 +3309,7 @@ function TaskTabV2(props) {
     const count = scopeCountOf(state.scope)
     return h(
       'div',
-      { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, background: V2_T.surface.app } },
+      { style: { flex: '1 1 auto', minWidth: 0, maxWidth: narrow || !state.detail ? 'none' : '50%', display: 'flex', flexDirection: 'column', minHeight: 0, background: V2_T.surface.app } },
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px', height: V2_T.line.header, minHeight: V2_T.line.header, boxSizing: 'border-box', borderBottom: '1px solid ' + V2_T.border.subtle } },
@@ -2769,7 +3330,7 @@ function TaskTabV2(props) {
             type: 'button',
             title: state.selectionMode ? '退出多选' : '多选任务',
             onClick: function onClick() {
-              update({ selectionMode: !state.selectionMode, selectedIds: [] })
+              changeSelectionMode(!state.selectionMode)
             },
             style: v2ToolbarBtnStyle(state.selectionMode),
             onMouseEnter: function onEnter(e) { e.currentTarget.style.background = V2_T.surface.panel2 },
@@ -2821,7 +3382,11 @@ function TaskTabV2(props) {
       renderQuickAdd(),
       h(
         'div',
-        { style: { flex: '1 1 auto', overflowY: 'auto', minHeight: 0 } },
+        {
+          ref: listScrollRef,
+          onScroll: onListScroll,
+          style: { flex: '1 1 auto', overflowY: 'auto', minHeight: 0 },
+        },
         renderTasksForScope(tasks),
       ),
     )
@@ -2840,11 +3405,13 @@ function TaskTabV2(props) {
         ref: detailRef,
         style: {
           width: narrow ? 'auto' : panes.detail,
-          flex: narrow ? '1 1 auto' : '0 0 ' + panes.detail + 'px',
+          /* #14：中间列表栏被限制在总宽 50% 以内，详情栏吸收剩余宽度，避免右侧留白 */
+          flex: narrow ? '1 1 auto' : '1 1 ' + panes.detail + 'px',
           borderLeft: narrow ? 'none' : '1px solid ' + V2_T.border.subtle,
           display: 'flex',
           flexDirection: 'column',
           minHeight: 0,
+          minWidth: narrow ? 0 : 280,
           background: V2_T.surface.shell,
         },
       },
@@ -2906,19 +3473,54 @@ function TaskTabV2(props) {
           'div',
           { style: Object.assign(v2CardStyle({ padding: '6px 12px', marginBottom: 12 }), { display: 'grid', gridTemplateColumns: '76px 1fr', columnGap: 8, rowGap: 0, gridAutoRows: 'minmax(34px, auto)', alignItems: 'center', fontSize: v2fs(12) }) },
           h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '日期'),
-          h('input', {
-            type: 'date',
-            value: v2TaskDateKey(task) || '',
-            onChange: function onChange(e) {
-              const value = e.target.value || null
-              patchTask(task.id, task.rev, {
-                scheduledDate: value,
-                scheduledStartAt: null,
-                scheduledEndAt: null,
-              }, null)
-            },
-            style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
-          }),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' } },
+            h('input', {
+              type: 'date',
+              value: v2TaskDateKey(task) || '',
+              onChange: function onChange(e) {
+                const value = e.target.value || null
+                patchTask(task.id, task.rev, {
+                  scheduledDate: value,
+                  scheduledStartAt: null,
+                  scheduledEndAt: null,
+                }, null)
+              },
+              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, flex: '0 0 auto', width: 132, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+            }),
+            /* #19：快捷日期——今天 / 明天 / 下周（今天 +7 天） */
+            h('button', {
+              type: 'button',
+              title: '设为今天',
+              onClick: function onClick() {
+                patchTask(task.id, task.rev, { scheduledDate: addDaysKey(todayIso(), 0), scheduledStartAt: null, scheduledEndAt: null }, null)
+              },
+              style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 24, padding: '0 7px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.secondary }),
+              onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+              onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            }, '今天'),
+            h('button', {
+              type: 'button',
+              title: '设为明天',
+              onClick: function onClick() {
+                patchTask(task.id, task.rev, { scheduledDate: addDaysKey(todayIso(), 1), scheduledStartAt: null, scheduledEndAt: null }, null)
+              },
+              style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 24, padding: '0 7px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.secondary }),
+              onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+              onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            }, '明天'),
+            h('button', {
+              type: 'button',
+              title: '设为下周（今天 +7 天）',
+              onClick: function onClick() {
+                patchTask(task.id, task.rev, { scheduledDate: addDaysKey(todayIso(), 7), scheduledStartAt: null, scheduledEndAt: null }, null)
+              },
+              style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 24, padding: '0 7px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.secondary }),
+              onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+              onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            }, '下周'),
+          ),
           h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '时间'),
           h(
             'div',
@@ -3150,7 +3752,19 @@ function TaskTabV2(props) {
             onChange: function onChange(e) { update({ detail: Object.assign({}, task, { notes: e.target.value }) }) },
             onBlur: function onBlur(e) {
               const value = e.target.value
-              if (value !== (task.notes || '')) patchTask(task.id, task.rev, { notes: value || null }, null)
+              /* 与“打开详情时的已提交值”比较（task.notes 已随 onChange 变化，直接比较会恒等） */
+              const base = detailNotesRef.current.id === task.id ? detailNotesRef.current.notes : (task.notes || '')
+              if (value === base) return
+              patchTask(task.id, task.rev, { notes: value || null }, null).then(function onSaved(ok) {
+                if (ok) detailNotesRef.current = { id: task.id, notes: value }
+              })
+            },
+            onKeyDown: function onKeyDown(e) {
+              if (e.key !== 'Escape') return
+              const base = detailNotesRef.current.id === task.id ? detailNotesRef.current.notes : (task.notes || '')
+              update({ detail: Object.assign({}, task, { notes: base }) })
+              e.preventDefault()
+              e.currentTarget.blur()
             },
             style: v2InputStyle({ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: v2fs(13), lineHeight: '20px', minHeight: 88, padding: '8px 10px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
           }),

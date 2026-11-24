@@ -5325,6 +5325,12 @@ window.__ModuleLoader__.load({
           .catch(function onError(error) {
             if (isUnavailableError(error)) return fallback(error)
             update({ busy: Object.assign({}, snapshot.busy, { create: false }) })
+            // 幂等：目录已存在视为成功（全局随记/日记等自动创建目录场景不应报错）
+            if (error && (error.code === 'path_exists' || /存在|exist/i.test(String(error.message || '')))) {
+              update({ tree: Object.assign({}, snapshot.tree, { expanded: Object.assign({}, snapshot.tree.expanded, { [path]: true }) }) })
+              scheduleTreeReload()
+              return null
+            }
             m0.toast('error', '新建文件夹失败：' + errorText(error))
             return null
           })
@@ -9107,7 +9113,7 @@ window.__ModuleLoader__.load({
     }
 
     /* ==== V2-MODULES-START ==== */
-/* ---- 00-core.js (241 lines) ---- */
+/* ---- 00-core.js (242 lines) ---- */
 /* ═══════════════════════ M6 · V2 客户端公共层 ═══════════════════════ */
 /* 说明：本文件由 scripts/build-v2.mjs 内联到 client.js 的 V2-MODULES 区段；
    与旧 UI 共用同一 factory 作用域（h/React/apiRequest/COLORS/FONT/runtime 等可直接用）。 */
@@ -9127,10 +9133,10 @@ function v2UiEnabled() {
   }
 }
 
-/* ── 全局界面字号（小/中/大/超大） ──
+/* ── 全局界面字号（更小/小/中/大/更大） ──
  * 说明：任务/日历/习惯/设置页共用 --v2-font-scale 根变量缩放文字；笔记编辑器字号单独在笔记内调整。
  * 设置存储仍由 60-settings 负责，这里只读取 uiFontSize 并派发 CSS 变量，避免核心层依赖设置模块。 */
-const V2_FONT_SCALE_CHOICES = { small: 0.92, medium: 1, large: 1.08, xlarge: 1.18 }
+const V2_FONT_SCALE_CHOICES = { smaller: 0.86, small: 0.92, medium: 1, large: 1.08, larger: 1.18 }
 let v2FontScaleCache = null
 
 function v2FontScale() {
@@ -9140,7 +9146,8 @@ function v2FontScale() {
     const raw = window.localStorage.getItem('lifeos.v2.settings')
     const parsed = raw ? JSON.parse(raw) : null
     const chosen = parsed && parsed.uiFontSize
-    scale = V2_FONT_SCALE_CHOICES[chosen] || 1
+    // 兼容旧四档：xlarge → larger（同为 1.18）
+    scale = V2_FONT_SCALE_CHOICES[chosen === 'xlarge' ? 'larger' : chosen] || 1
   } catch (error) {
     scale = 1
   }
@@ -9499,7 +9506,7 @@ function v2PageBgStyle(extra) {
   )
 }
 
-/* ---- 10-shell.js (1046 lines) ---- */
+/* ---- 10-shell.js (1110 lines) ---- */
 /* ═══════════════════════ M6 · V2 外壳 ═══════════════════════ */
 
 const V2_TAB_STORAGE_KEY = 'lifeos.v2.tab'
@@ -10344,15 +10351,54 @@ async function runM6SelfCheck(force) {
 }
 
 
+/* ── 全局快速记录：草稿自动保存（#15） ── */
+const V2_CAPTURE_DRAFT_KEY = 'lifeos.v2.captureDraft'
+
+function v2ReadCaptureDraft() {
+  try {
+    const raw = window.localStorage.getItem(V2_CAPTURE_DRAFT_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed.text !== 'string') return null
+    return { text: parsed.text, target: parsed.target === 'note' ? 'note' : 'task' }
+  } catch (error) {
+    return null
+  }
+}
+
+function v2WriteCaptureDraft(draft) {
+  try {
+    window.localStorage.setItem(V2_CAPTURE_DRAFT_KEY, JSON.stringify({ text: String(draft.text || ''), target: draft.target === 'note' ? 'note' : 'task' }))
+  } catch (error) {
+    /* 忽略写入失败 */
+  }
+}
+
+function v2ClearCaptureDraft() {
+  try {
+    window.localStorage.removeItem(V2_CAPTURE_DRAFT_KEY)
+  } catch (error) {
+    /* 忽略 */
+  }
+}
+
 /* ── 全局快速记录浮层（DSH 对话页也使用 V2 样式与提交语义） ── */
 function V2HostCaptureDialog(props) {
   const closeCallback = props && typeof props.onClose === 'function' ? props.onClose : null
   const savedCallback = props && typeof props.onSaved === 'function' ? props.onSaved : null
-  const [target, setTarget] = useState('task')
-  const [text, setText] = useState('')
+  const initialDraft = v2ReadCaptureDraft()
+  const [target, setTarget] = useState(initialDraft && initialDraft.target === 'note' ? 'note' : 'task')
+  const [text, setText] = useState(initialDraft && initialDraft.text ? initialDraft.text : '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [hintPulse, setHintPulse] = useState(false)
+  const [draftRestored] = useState(!!(initialDraft && initialDraft.text.trim()))
   const textareaRef = useRef(null)
+
+  useEffect(function persistDraft() {
+    if (String(text || '').trim()) v2WriteCaptureDraft({ text: text, target: target })
+    else v2ClearCaptureDraft()
+  }, [text, target])
 
   useEffect(function focusOnOpen() {
     const timer = setTimeout(function focusLater() {
@@ -10395,6 +10441,7 @@ function V2HostCaptureDialog(props) {
           /* ignore */
         }
       }
+      v2ClearCaptureDraft()
       close()
     } catch (error) {
       setError(errorText(error))
@@ -10419,7 +10466,14 @@ function V2HostCaptureDialog(props) {
       return
     }
     if (event.shiftKey) return
-    if (String(text || '').length > 30) return
+    if (String(text || '').length > 30) {
+      // 长内容 Enter 不会立即保存：给一次轻量反馈，说明 Shift+Enter 换行 / Ctrl+Enter 立即保存
+      setHintPulse(true)
+      setTimeout(function stopPulse() {
+        setHintPulse(false)
+      }, 1600)
+      return
+    }
     event.preventDefault()
     submit()
   }
@@ -10465,6 +10519,11 @@ function V2HostCaptureDialog(props) {
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         h('div', { style: { fontSize: v2fs(13), fontWeight: 600, color: V2.text, flex: '1 1 auto' } }, '快速记录'),
+        h(
+          'span',
+          { title: 'Enter 保存；Shift+Enter 换行；Ctrl+Enter 立即保存；关闭后草稿会保留', 'aria-label': '输入规则', style: { width: 20, height: 20, borderRadius: 10, border: '1px solid ' + V2.line, color: V2.sub, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: v2fs(11), cursor: 'help' } },
+          'i',
+        ),
         h(
           'button',
           {
@@ -10516,7 +10575,7 @@ function V2HostCaptureDialog(props) {
         autoFocus: true,
         value: text,
         rows: 4,
-        placeholder: target === 'task' ? '记一条任务，Enter 保存' : '随手记点什么，Enter 保存（长文换行）',
+        placeholder: target === 'task' ? '记一条任务，Enter 保存；Shift+Enter 换行' : '随手记点什么，Enter 保存（长文用 Shift+Enter 换行，Ctrl+Enter 立即保存）',
         onChange: function onChange(event) {
           setText(event.target.value)
         },
@@ -10534,19 +10593,31 @@ function V2HostCaptureDialog(props) {
         }),
       }),
       error ? h('div', { style: { fontSize: v2fs(11), color: V2.danger, lineHeight: '17px' } }, error) : null,
+      draftRestored && !error
+        ? h('div', { style: { fontSize: v2fs(11), color: V2.faint, lineHeight: '16px' } }, '已恢复上次未发送的草稿')
+        : null,
       h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: v2fs(11), color: V2.faint } },
-        h('span', null, target === 'task' ? 'Enter 保存 · Shift+Enter 换行' : 'Enter 保存（长文换行）· Ctrl+Enter 保存'),
+        { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: v2fs(11), color: hintPulse ? V2.accent : V2.faint } },
+        h('span', null, 'Enter 保存 · Shift+Enter 换行' + (hintPulse ? ' · 内容较长，请用 Shift+Enter 换行' : '')),
         h('span', { style: { flex: '1 1 auto' } }),
         h('button', { type: 'button', onClick: close, style: v2BtnStyle('ghost') }, '取消'),
-        h('button', { type: 'button', disabled: saving, onClick: submit, style: v2BtnStyle('primary') }, saving ? '保存中…' : '保存'),
+        h(
+          'button',
+          {
+            type: 'button',
+            disabled: saving,
+            onClick: submit,
+            style: Object.assign({}, v2BtnStyle('primary'), hintPulse ? { boxShadow: '0 0 0 2px rgba(110,168,254,0.5)' } : null),
+          },
+          saving ? '保存中…' : '保存',
+        ),
       ),
     ),
   )
 }
 
-/* ---- 20-tasks.js (3460 lines) ---- */
+/* ---- 20-tasks.js (4074 lines) ---- */
 /* ═══════════════════════ M6 · V2 任务 Tab ═══════════════════════ */
 
 const V2_PRIORITY_ITEMS = [
@@ -10651,6 +10722,143 @@ function v2ParseTarget(text, today) {
   return parsed
 }
 
+/* ═════════ 任务 Tab 页面状态（#4）：scope / 选中 / 详情 / 筛选排序 / 折叠 / 滚动 ═════════
+   单独使用 lifeos.v2.state.task，和 lifeos.v2.taskPanes（三栏宽度）、
+   lifeos.v2.settings（全局默认值）互不覆盖；任何读取失败都回退默认值。 */
+
+const V2_TASK_STATE_KEY = 'lifeos.v2.state.task'
+
+const V2_TASK_STATE_SCOPES = ['today', 'next7', 'inbox', 'done', 'trash', 'list', 'tag', 'filter']
+
+const V2_TASK_STATE_SECTIONS = ['lists', 'filters', 'tags', 'archive']
+
+function v2SanitizeTaskScope(scope) {
+  if (!scope || typeof scope !== 'object') return null
+  const kind = String(scope.kind || '')
+  if (V2_TASK_STATE_SCOPES.indexOf(kind) < 0) return null
+  const id = typeof scope.id === 'string' ? scope.id : ''
+  /* list / tag / filter 依赖 id 定位，缺 id 时回退到默认 scope，避免打开后空列表 */
+  if ((kind === 'list' || kind === 'tag' || kind === 'filter') && !id) return null
+  const next = { kind: kind }
+  if (id) next.id = id
+  if (kind === 'filter' && typeof scope.label === 'string' && scope.label) next.label = scope.label
+  return next
+}
+
+function v2ReadTaskState() {
+  const fallbackFolded = {}
+  V2_TASK_STATE_SECTIONS.forEach(function each(key) { fallbackFolded[key] = false })
+  const fallback = {
+    scope: null,
+    view: null,
+    sort: null,
+    query: '',
+    selectedId: null,
+    detailOpen: false,
+    collapsed: {},
+    leftFolded: fallbackFolded,
+    scroll: null,
+  }
+  try {
+    const raw = window.localStorage.getItem(V2_TASK_STATE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return fallback
+    const collapsed = {}
+    if (parsed.collapsed && typeof parsed.collapsed === 'object') {
+      Object.keys(parsed.collapsed).forEach(function each(key) {
+        if (parsed.collapsed[key] === true) collapsed[key] = true
+      })
+    }
+    const leftFolded = {}
+    V2_TASK_STATE_SECTIONS.forEach(function each(key) {
+      leftFolded[key] = !!(parsed.leftFolded && parsed.leftFolded[key] === true)
+    })
+    const view = parsed.view === 'board' || parsed.view === 'list' ? parsed.view : null
+    const sort = ['custom', 'created', 'date', 'priority'].indexOf(parsed.sort) >= 0 ? parsed.sort : null
+    let scroll = null
+    if (parsed.scroll && typeof parsed.scroll.key === 'string' && Number.isFinite(Number(parsed.scroll.top))) {
+      scroll = { key: parsed.scroll.key, top: Math.max(0, Math.round(Number(parsed.scroll.top))) }
+    }
+    return {
+      scope: v2SanitizeTaskScope(parsed.scope),
+      view: view,
+      sort: sort,
+      query: typeof parsed.query === 'string' ? parsed.query.slice(0, 120) : '',
+      selectedId: typeof parsed.selectedId === 'string' && parsed.selectedId ? parsed.selectedId : null,
+      detailOpen: parsed.detailOpen === true,
+      collapsed: collapsed,
+      leftFolded: leftFolded,
+      scroll: scroll,
+    }
+  } catch (error) {
+    return fallback
+  }
+}
+
+function v2WriteTaskState(snapshot) {
+  try {
+    window.localStorage.setItem(V2_TASK_STATE_KEY, JSON.stringify(snapshot))
+  } catch (error) {
+    /* localStorage 不可用 / 配额不足时静默忽略，不影响交互 */
+  }
+}
+
+/* #9：鼠标点击标题进入 inline 编辑时，按点击坐标取字符位置（键盘/按钮入口仍全选）。
+   优先使用浏览器 caretPositionFromPoint / caretRangeFromPoint；
+   不可用或坐标落在标题外时返回 null，调用方回退到“全选”。 */
+function v2CaretIndexFromPoint(element, x, y) {
+  if (!element || typeof document === 'undefined' || typeof x !== 'number' || typeof y !== 'number') return null
+  let node = null
+  let offset = 0
+  try {
+    if (typeof document.caretPositionFromPoint === 'function') {
+      const position = document.caretPositionFromPoint(x, y)
+      if (position) {
+        node = position.offsetNode
+        offset = position.offset
+      }
+    } else if (typeof document.caretRangeFromPoint === 'function') {
+      const range = document.caretRangeFromPoint(x, y)
+      if (range) {
+        node = range.startContainer
+        offset = range.startOffset
+      }
+    }
+  } catch (error) {
+    return null
+  }
+  if (!node || !element.contains(node)) return null
+  try {
+    const measure = document.createRange()
+    measure.selectNodeContents(element)
+    measure.setEnd(node, offset)
+    return measure.toString().length
+  } catch (error) {
+    return null
+  }
+}
+
+/* #17：多选模式的行尾选择框（方形，和圆角完成框明显区分） */
+function v2SelectSquareStyle(selected) {
+  return {
+    width: 18,
+    height: 18,
+    minWidth: 18,
+    borderRadius: 4,
+    border: '1.5px solid ' + (selected ? V2_T.accent.base : V2_T.border.strong),
+    background: selected ? V2_T.accent.soft : 'transparent',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    padding: 0,
+    flex: '0 0 auto',
+    color: V2_T.accent.base,
+    transition: 'border-color 120ms ease, background 120ms ease',
+  }
+}
+
 function TaskArowV2(props) {
   const task = props.task
   const selected = props.selected
@@ -10659,6 +10867,8 @@ function TaskArowV2(props) {
   const doneChild = props.doneChild
   /* 视觉变体：看板列中的任务项用浮起卡片；列表内仍是扁平行（仅样式差异，无行为差异） */
   const carded = props.card === true
+  /* #17：多选模式隐藏行首完成框，改用行尾方形选择框，避免误点完成 */
+  const selectMode = props.selectMode === true
   const repeatRule = v2RepeatRuleOf(task)
   const [draft, setDraft] = useState(task.title)
   /* 拖拽插入位置提示：'' | 'before' | 'after' */
@@ -10670,10 +10880,22 @@ function TaskArowV2(props) {
   }, [task.title])
 
   useEffect(function focusEditor() {
-    if (editing && inputRef.current) {
-      inputRef.current.focus()
-      inputRef.current.select()
+    if (!editing || !inputRef.current) return
+    const input = inputRef.current
+    input.focus()
+    /* #9：鼠标点击标题进入编辑时把光标落在点击处；
+       键盘/按钮入口没有 caret，保持原来的全选行为。 */
+    const caret = typeof props.editCaret === 'number' ? props.editCaret : -1
+    if (caret >= 0) {
+      const position = Math.min(caret, String(draft).length)
+      try {
+        input.setSelectionRange(position, position)
+        return
+      } catch (error) {
+        /* 个别浏览器不支持对当前输入类型 setSelectionRange，回退全选 */
+      }
     }
+    input.select()
   }, [editing])
 
   /* 拖拽可能在行外松手（窗口/其它容器/取消），dragend 不一定经过本行；
@@ -10702,7 +10924,7 @@ function TaskArowV2(props) {
           margin: '2px 4px',
         }),
       },
-      h('button', { type: 'button', onClick: props.onToggle, style: v2CheckStyle(task) }),
+      props.selectMode ? null : h('button', { type: 'button', onClick: props.onToggle, style: v2CheckStyle(task) }),
       h('input', {
         ref: inputRef,
         value: draft,
@@ -10785,15 +11007,17 @@ function TaskArowV2(props) {
       onMouseEnter: function enter(e) {
         e.currentTarget.style.background = selected || carded ? V2_T.surface.panel3 : V2_T.surface.panel2
         const actions = e.currentTarget.querySelector('.v2-row-actions')
-        if (actions) actions.style.opacity = '0.75'
+        if (actions) actions.style.opacity = selectMode ? '1' : '0.75'
       },
       onMouseLeave: function leave(e) {
         e.currentTarget.style.background = selected ? V2_T.surface.panel3 : carded ? V2_T.surface.panel2 : 'transparent'
         const actions = e.currentTarget.querySelector('.v2-row-actions')
-        if (actions) actions.style.opacity = '0.4'
+        if (actions) actions.style.opacity = selectMode ? '1' : '0.4'
       },
     },
-    h('button', {
+    selectMode
+      ? null
+      : h('button', {
       type: 'button',
       title: v2TaskCompleted(task) ? '取消完成' : '标记完成',
       onClick: function onClick(e) {
@@ -10810,8 +11034,11 @@ function TaskArowV2(props) {
         { style: { display: 'flex', alignItems: 'center', gap: 6 } },
         h('span', {
           onClick: function onTitleClick(e) {
+            /* #17：多选模式下点击标题交给整行选择，不进入 inline 编辑 */
+            if (selectMode) return
             e.stopPropagation()
-            props.onStartEdit(task)
+            /* 只有鼠标点击标题才计算光标位置；onStartEdit 的第二参为 null 时父层回退全选 */
+            props.onStartEdit(task, v2CaretIndexFromPoint(e.currentTarget, e.clientX, e.clientY))
           },
           style: {
             fontSize: v2fs(13.5),
@@ -10878,8 +11105,23 @@ function TaskArowV2(props) {
       'div',
       {
         className: 'v2-row-actions',
-        style: { display: 'flex', alignItems: 'center', gap: 2, opacity: 0.4, transition: 'opacity 120ms ease' },
+        style: { display: 'flex', alignItems: 'center', gap: 2, opacity: selectMode ? 1 : 0.4, transition: 'opacity 120ms ease' },
       },
+      selectMode
+        ? h('button', {
+            type: 'button',
+            title: selected ? '取消选择' : '选择任务',
+            'aria-pressed': selected ? 'true' : 'false',
+            'aria-label': '选择任务',
+            onClick: function onSelectClick(e) {
+              e.stopPropagation()
+              if (props.onSelectToggle) props.onSelectToggle(task)
+            },
+            onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+            onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            style: v2SelectSquareStyle(selected),
+          }, selected ? h(V2Icon, { name: 'check', size: 11, color: V2_T.accent.base, strokeWidth: 3 }) : null)
+        : null,
       h('button', {
         type: 'button',
         title: '更多',
@@ -10978,6 +11220,9 @@ function TaskTabV2(props) {
 
   const [state, setState] = useState(function initial() {
     const prefs = v2ReadSettings()
+    /* #4：先恢复上次的 scope / 折叠 / 搜索词；view/sort 仍以全局默认值为初值，
+       mount 后再用 lifeos.v2.state.task 覆盖（避免闪一下默认视图）。 */
+    const saved = v2ReadTaskState()
     return {
       loading: true,
       error: null,
@@ -10986,13 +11231,16 @@ function TaskTabV2(props) {
       trash: [],
       lists: [],
       groups: [],
-      scope: { kind: 'today' },
+      scope: saved.scope || { kind: 'today' },
       view: prefs.taskView === 'board' ? 'board' : 'list',
       sort: prefs.taskSort || 'custom',
       selectedId: null,
       detail: null,
       editingId: null,
-      collapsed: {},
+      collapsed: saved.collapsed,
+      leftFolded: saved.leftFolded,
+      query: saved.query,
+      searchOpen: saved.query.length > 0,
       quickAdd: '',
       quickAddHint: '',
       busy: false,
@@ -11027,11 +11275,71 @@ function TaskTabV2(props) {
   /* 详情标题的“已提交值”：state.detail 会随输入实时变化，
      不能再用 task.title 判断是否有改动，否则永远判定为“未修改”而不落库。 */
   const detailTitleRef = useRef({ id: null, title: '' })
+  const detailNotesRef = useRef({ id: null, notes: '' })
+  /* #9：进入 inline 编辑时的点击光标位置（-1 表示键盘/按钮入口 → 全选） */
+  const editCaretRef = useRef(-1)
+  /* #13：搜索输入框与“用户主动打开搜索”的聚焦标记 */
+  const searchInputRef = useRef(null)
+  const searchFocusRef = useRef(false)
+  /* #7：分组内“添加任务”输入框，创建后保持焦点 */
+  const groupAddInputRef = useRef(null)
+  /* #4：列表滚动容器 + 滚动位置持久化 */
+  const listScrollRef = useRef(null)
+  const lastScrollRef = useRef(0)
+  const restoredScrollRef = useRef('')
+  const pendingScrollRef = useRef(null)
+  const scrollPersistRef = useRef(null)
+  const hydratedRef = useRef(false)
+  const restoreDetailRef = useRef(null)
   stateRef.current = state
   panesRef.current = panes
 
   function update(patch) {
     setState(function merge(prev) { return Object.assign({}, prev, patch) })
+  }
+
+  /* #4：把当前页面状态写回 lifeos.v2.state.task（容错在 v2WriteTaskState 内） */
+  function persistTaskStateNow() {
+    if (!hydratedRef.current) return
+    const current = stateRef.current
+    v2WriteTaskState({
+      scope: current.scope,
+      view: current.view,
+      sort: current.sort,
+      query: current.query,
+      selectedId: current.selectionMode ? null : current.selectedId,
+      detailOpen: !current.selectionMode && !!current.detail,
+      collapsed: current.collapsed,
+      leftFolded: current.leftFolded,
+      scroll: { key: scopeKey(current.scope), top: Math.max(0, Math.round(lastScrollRef.current || 0)) },
+    })
+  }
+
+  /* #2：多选开关统一入口——进入时清掉单选高亮/详情/编辑态，退出时清空选中集合；
+     行高亮只由 selectedIds 驱动，避免旧的 selectedId 蓝色高亮残留在多选模式里。 */
+  function changeSelectionMode(next) {
+    if (!next) {
+      update({ selectionMode: false, selectedIds: [] })
+      return
+    }
+    update({ selectionMode: true, selectedIds: [], selectedId: null, detail: null, editingId: null })
+  }
+
+  /* #4：列表滚动时记录位置（250ms 防抖落盘） */
+  function onListScroll(event) {
+    lastScrollRef.current = event.currentTarget.scrollTop
+    if (scrollPersistRef.current) return
+    scrollPersistRef.current = window.setTimeout(function flushScroll() {
+      scrollPersistRef.current = null
+      persistTaskStateNow()
+    }, 250)
+  }
+
+  /* #4：左栏四个分区（清单/过滤器/标签/收纳区）折叠状态 */
+  function toggleLeftSection(key) {
+    const next = Object.assign({}, stateRef.current.leftFolded)
+    next[key] = !next[key]
+    update({ leftFolded: next })
   }
 
   async function safeRequest(path, options) {
@@ -11120,7 +11428,42 @@ function TaskTabV2(props) {
   }
 
   useEffect(function mount() {
-    reload(true)
+    /* #4：恢复上次的任务页状态（view/sort 覆盖全局默认值，scope 已在 initial 中恢复） */
+    const saved = v2ReadTaskState()
+    const patch = {}
+    if (saved.view) patch.view = saved.view
+    if (saved.sort) patch.sort = saved.sort
+    if (Object.keys(patch).length) update(patch)
+    pendingScrollRef.current = saved.scroll
+    restoreDetailRef.current = saved.selectedId && saved.detailOpen ? saved.selectedId : null
+    reload(true).then(function afterFirstLoad(payload) {
+      if (payload) {
+        /* 用 payload 而不是 stateRef.current：此时 reload 的 setState 还没渲染，stateRef 可能是旧值 */
+        const scope = stateRef.current.scope || { kind: 'today' }
+        const lists = payload.lists || []
+        const tags = payload.tags || []
+        const scopeAlive = scope.kind === 'list'
+          ? lists.some(function hasList(list) { return list.id === scope.id })
+          : scope.kind === 'tag'
+            ? tags.some(function hasTag(tag) { return tag.id === scope.id })
+            : true
+        if (!scopeAlive) {
+          update({ scope: { kind: 'today' }, detail: null, selectedId: null })
+        } else {
+          const wantedId = restoreDetailRef.current
+          restoreDetailRef.current = null
+          if (wantedId) {
+            const found = v2FindTaskById(payload.tasks || [], wantedId) || v2FindTaskById(payload.done || [], wantedId) || v2FindTaskById(payload.trash || [], wantedId)
+            if (found) {
+              detailTitleRef.current = { id: found.id, title: found.title }
+              detailNotesRef.current = { id: found.id, notes: found.notes || '' }
+              update({ selectedId: found.id, detail: found })
+            }
+          }
+        }
+      }
+      hydratedRef.current = true
+    })
   }, [])
 
   useEffect(function refreshOnSignal() {
@@ -11130,6 +11473,73 @@ function TaskTabV2(props) {
   useEffect(function focusQuickAdd() {
     if (quickAddSignal > 0 && inputRef.current) inputRef.current.focus()
   }, [quickAddSignal])
+
+  /* #13：搜索框展开后聚焦 */
+  useEffect(function focusSearchInput() {
+    if (!state.searchOpen || !searchFocusRef.current) return
+    searchFocusRef.current = false
+    if (searchInputRef.current) {
+      searchInputRef.current.focus()
+      try {
+        searchInputRef.current.select()
+      } catch (error) {
+        /* 选择失败不影响输入 */
+      }
+    }
+  }, [state.searchOpen])
+
+  /* #4：列表滚动位置恢复（切换 scope / 首次加载后各执行一次） */
+  useEffect(function restoreScrollPosition() {
+    if (state.loading) return
+    const el = listScrollRef.current
+    if (!el) return
+    const key = scopeKey(state.scope)
+    if (restoredScrollRef.current === key) return
+    restoredScrollRef.current = key
+    const saved = pendingScrollRef.current
+    pendingScrollRef.current = null
+    el.scrollTop = saved && saved.key === key ? saved.top : 0
+    lastScrollRef.current = el.scrollTop
+  }, [state.loading, state.scope])
+
+  /* #4：状态变化后落盘（hydrated 之后才写，避免覆盖已保存的选中任务） */
+  useEffect(function persistTaskState() {
+    persistTaskStateNow()
+  }, [state.scope, state.view, state.sort, state.query, state.selectedId, state.detail, state.collapsed, state.leftFolded, state.selectionMode])
+
+  /* #4：卸载时清掉滚动防抖定时器，并把最后一次状态落盘（切 Tab 不丢滚动位置） */
+  useEffect(function cleanupScrollTimer() {
+    return function cleanup() {
+      if (scrollPersistRef.current) {
+        window.clearTimeout(scrollPersistRef.current)
+        scrollPersistRef.current = null
+      }
+      persistTaskStateNow()
+    }
+  }, [])
+
+  /* #13："/" 快捷键展开并聚焦左栏搜索框 */
+  useEffect(function searchShortcut() {
+    function onKeyDown(event) {
+      if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return
+      if (modalRef.current) return
+      const target = event.target
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) return
+      if (stateRef.current.editingId) return
+      event.preventDefault()
+      if (!narrow && panesRef.current.listCollapsed) {
+        savePanes(Object.assign({}, panesRef.current, { listCollapsed: false }))
+      }
+      searchFocusRef.current = true
+      update({ searchOpen: true })
+      /* 搜索框已经展开时 effect 不会重跑，这里直接聚焦 */
+      if (searchInputRef.current) searchInputRef.current.focus()
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return function cleanup() {
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [narrow])
 
   /* 清单/分组拖拽在窗口外松手时 dragleave 不会触发，统一在 dragend 清空插入线 */
   useEffect(function clearPaneDropHintsOnDragEnd() {
@@ -11160,7 +11570,13 @@ function TaskTabV2(props) {
       }
       if (current.selectionMode) {
         event.preventDefault()
-        update({ selectionMode: false, selectedIds: [] })
+        changeSelectionMode(false)
+        return
+      }
+      /* #13：Escape 关闭左栏搜索框（焦点在搜索框内时由输入框自身处理） */
+      if (current.searchOpen) {
+        event.preventDefault()
+        update({ searchOpen: false, query: '' })
       }
     }
     document.addEventListener('keydown', onKeyDown, true)
@@ -11338,7 +11754,8 @@ function TaskTabV2(props) {
   }
 
   function selectedTasksNow() {
-    const all = state.tasks.concat(state.done)
+    /* 垃圾桶批量（恢复/彻底删除）需要取到 trash 里的任务；非 trash scope 时 trash 为空，无副作用 */
+    const all = state.tasks.concat(state.done, state.trash)
     return all.filter(function f(task) { return state.selectedIds.indexOf(task.id) >= 0 })
   }
 
@@ -11347,7 +11764,7 @@ function TaskTabV2(props) {
     if (!tasks.length) return
     runMutation(async function doBatch() {
       for (const task of tasks) await worker(task)
-      update({ selectionMode: false, selectedIds: [] })
+      changeSelectionMode(false)
     }, label)
   }
 
@@ -11379,6 +11796,75 @@ function TaskTabV2(props) {
         body: JSON.stringify(Object.assign({ expectedRev: task.rev }, patch)),
       })
     })
+  }
+
+  /* #5：垃圾桶批量恢复——Host 无任务 batch 端点，逐条 POST /tasks/:id/restore */
+  function batchRestore() {
+    const count = selectedTasksNow().length
+    batchRun('已恢复 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id) + '/restore', {
+        method: 'POST',
+        body: JSON.stringify({ expectedRev: task.rev }),
+      })
+    })
+  }
+
+  /* #5：垃圾桶批量彻底删除——逐条 DELETE /tasks/:id?purge=1 */
+  function batchPurge() {
+    const count = selectedTasksNow().length
+    batchRun('已彻底删除 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id) + '?purge=1&expectedRev=' + encodeURIComponent(task.rev), { method: 'DELETE' })
+    })
+  }
+
+  /* #2：批量移到分组——Host 没有任务 batch 端点，逐条 PATCH listId+groupId。
+     Host 会校验分组必须属于目标清单，所以必须同时给 listId（不能只给 groupId）。 */
+  function batchMoveToGroup(listId, groupId) {
+    const count = selectedTasksNow().length
+    const targetList = listId || null
+    batchRun('已移动 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRev: task.rev, listId: targetList, groupId: groupId || null }),
+      })
+    })
+  }
+
+  /* #2：批量移出分组——保留任务当前所在清单，只清空 groupId */
+  function batchClearGroup() {
+    const count = selectedTasksNow().length
+    batchRun('已移出分组 ' + count + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRev: task.rev, groupId: null }),
+      })
+    })
+  }
+
+  function openBatchGroupMenu(event) {
+    function groupListId(group) { return (group && (group.listId || group.list_id)) || null }
+    const items = [{ label: '移出分组（保留清单）', icon: 'folder', onClick: batchClearGroup }]
+    const ordered = []
+    state.lists.forEach(function eachList(list) {
+      state.groups.forEach(function eachGroup(group) {
+        if (groupListId(group) === list.id && ordered.indexOf(group) < 0) ordered.push(group)
+      })
+    })
+    state.groups.forEach(function eachOrphan(group) {
+      if (ordered.indexOf(group) < 0 && groupListId(group)) ordered.push(group)
+    })
+    ordered.forEach(function each(group) {
+      const targetList = groupListId(group)
+      items.push({
+        label: listNameOf(targetList) + ' / ' + group.name,
+        icon: 'folder',
+        onClick: function onClick() { batchMoveToGroup(targetList, group.id) },
+      })
+    })
+    items.push({ type: 'separator' })
+    items.push({ label: '取消多选', icon: 'close', onClick: function onClick() { changeSelectionMode(false) } })
+    const rect = event && event.currentTarget ? event.currentTarget.getBoundingClientRect() : null
+    openV2PlainMenu(rect ? Math.round(rect.left) : 220, rect ? Math.round(rect.bottom + 4) : 220, items)
   }
 
   function openBatchTagMenu() {
@@ -11415,13 +11901,36 @@ function TaskTabV2(props) {
           body: JSON.stringify({ expectedRev: task.rev, tagIds: ids }),
         })
       }
-      update({ selectionMode: false, selectedIds: [] })
+      changeSelectionMode(false)
     }, '已添加标签')
   }
 
   function renderSelectionBar() {
     if (!state.selectionMode) return null
     const count = state.selectedIds.length
+    const trashMode = state.scope.kind === 'trash'
+    const soft = { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }
+    const ghost = { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm }
+    const buttons = []
+    if (trashMode) {
+      /* #5：垃圾桶里只有“恢复 / 彻底删除”是有意义的批量操作 */
+      buttons.push(h('button', { type: 'button', onClick: batchRestore, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '恢复'))
+      buttons.push(h('button', { type: 'button', onClick: batchPurge, style: v2BtnStyle('ghost', Object.assign({}, ghost, { color: V2_T.status.danger })) }, '彻底删除'))
+    } else {
+      buttons.push(h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '移入清单'))
+      buttons.push(h('button', {
+        type: 'button',
+        onClick: function onClick(event) { openBatchGroupMenu(event) },
+        style: v2BtnStyle('soft', Object.assign({}, soft)),
+      }, '移到分组'))
+      buttons.push(h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '添加标签'))
+      buttons.push(h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', Object.assign({}, ghost, { color: V2_T.status.danger })) }, '删除'))
+    }
+    buttons.push(h('button', {
+      type: 'button',
+      onClick: function onClick() { changeSelectionMode(false) },
+      style: v2BtnStyle('ghost', Object.assign({}, ghost)),
+    }, '取消'))
     return h(
       'div',
       {
@@ -11434,16 +11943,8 @@ function TaskTabV2(props) {
           background: V2_T.surface.shell,
         },
       },
-      h('span', { style: { fontSize: v2fs(12), color: V2_T.text.secondary } }, count ? '已选 ' + count + ' 项' : '点击任务以多选'),
-      h('div', { style: { flex: '1 1 auto' } }),
-      h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '移入清单'),
-      h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.primary }) }, '添加标签'),
-      h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm, color: V2_T.status.danger }) }, '删除'),
-      h('button', {
-        type: 'button',
-        onClick: function onClick() { update({ selectionMode: false, selectedIds: [] }) },
-        style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 28, padding: '0 10px', borderRadius: V2_T.radius.sm }),
-      }, '取消'),
+      [h('span', { style: { fontSize: v2fs(12), color: V2_T.text.secondary } }, count ? '已选 ' + count + ' 项' : '点击任务以多选'),
+        h('div', { style: { flex: '1 1 auto' } })].concat(buttons),
     )
   }
 
@@ -11519,9 +12020,10 @@ function TaskTabV2(props) {
     }, '已彻底删除')
   }
 
-  async function createTask(input, extra) {
+  async function createTask(input, extra, options) {
     const text = String(input || '').trim()
     if (!text) return
+    const opts = options || {}
     const parsed = v2ParseTarget(text, todayIso())
     const body = Object.assign({
       title: parsed.title || text,
@@ -11531,10 +12033,13 @@ function TaskTabV2(props) {
       await apiRequest('/tasks', { method: 'POST', body: JSON.stringify(body) })
       update({ quickAdd: '', quickAddHint: '' })
       await reload(false)
-      if (inputRef.current) inputRef.current.focus()
+      /* #7：分组内创建由调用方接管焦点，避免抢回主快速添加框 */
+      if (opts.focus !== false && inputRef.current) inputRef.current.focus()
       runtime.toast('success', '已添加任务')
+      return true
     } catch (error) {
       runtime.toast('error', '创建失败：' + errorText(error))
+      return false
     }
   }
 
@@ -11589,6 +12094,7 @@ function TaskTabV2(props) {
 
   function openDetail(task) {
     detailTitleRef.current = { id: task.id, title: task.title }
+    detailNotesRef.current = { id: task.id, notes: task.notes || '' }
     update({ selectedId: task.id, detail: task })
   }
 
@@ -12085,12 +12591,37 @@ function TaskTabV2(props) {
     }))
   }
 
+  /* #7：分组内连续创建——算一个排到该分组末尾的 sortOrder（0..1e9 整数） */
+  function nextGroupSortOrder(listId, groupId) {
+    const targetList = listId || null
+    const targetGroup = groupId || null
+    let max = 0
+    state.tasks.concat(state.done).forEach(function scan(task) {
+      if (v2TaskParentId(task)) return
+      if ((v2TaskListId(task) || null) !== targetList) return
+      if ((v2TaskGroupId(task) || null) !== targetGroup) return
+      const order = Number(task.sortOrder)
+      if (Number.isFinite(order) && order > max) max = order
+    })
+    return Math.min(TASK_SORT_MAX, max + TASK_SORT_STEP)
+  }
+
   function submitGroupAdd() {
     const target = state.groupAdd
     const text = String(state.groupAddText || '').trim()
     if (!target || !text) return
-    createTask(text, { listId: target.listId, groupId: target.groupId || null })
+    const listId = target.listId || null
+    const groupId = target.groupId || null
+    /* 先清空输入框：任务创建（含 reload）期间再按回车不会重复提交同一标题 */
     update({ groupAddText: '' })
+    /* sortOrder 让新任务落到该分组末尾；focus:false 避免 createTask 抢焦点回主快速添加框 */
+    createTask(text, { listId: listId, groupId: groupId, sortOrder: nextGroupSortOrder(listId, groupId) }, { focus: false }).then(function afterCreate(created) {
+      /* 创建失败时把标题放回输入框，避免用户输入丢失 */
+      if (created === false) update({ groupAddText: text })
+      const el = groupAddInputRef.current
+      if (el) el.focus()
+      else if (inputRef.current) inputRef.current.focus()
+    })
   }
 
   /* ═════════ 计数（与列表同谓词：顶层 + 未取消） ═════════ */
@@ -12580,6 +13111,50 @@ function TaskTabV2(props) {
       )
     }
 
+    /* #27：左栏分区标题——可点击折叠/展开，状态持久化在 lifeos.v2.state.task */
+    function sectionHeader(key, title, action) {
+      const folded = !!(state.leftFolded && state.leftFolded[key])
+      return h(
+        'div',
+        { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        h('button', {
+          type: 'button',
+          'aria-expanded': folded ? 'false' : 'true',
+          'aria-controls': 'v2-left-section-' + key,
+          onClick: function onClick() { toggleLeftSection(key) },
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            flex: '1 1 auto',
+            minWidth: 0,
+            padding: 0,
+            border: 'none',
+            background: 'transparent',
+            color: V2_T.text.tertiary,
+            fontFamily: COLORS.fontFamily,
+            fontSize: v2fs(V2_T.font.caption),
+            fontWeight: 600,
+            letterSpacing: '0.02em',
+            textAlign: 'left',
+            cursor: 'pointer',
+          },
+          onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+          onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+        },
+        h(V2Icon, { name: folded ? 'chevR' : 'chevD', size: 12 }),
+        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
+        ),
+        action || null,
+      )
+    }
+
+    function sectionBody(key, children) {
+      const folded = !!(state.leftFolded && state.leftFolded[key])
+      if (folded) return null
+      return h('div', { id: 'v2-left-section-' + key }, children)
+    }
+
     if (!narrow && panes.listCollapsed) {
       return h(
         'div',
@@ -12643,31 +13218,74 @@ function TaskTabV2(props) {
         'div',
         { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 12px 8px' } },
         h('span', { style: { fontSize: v2fs(12), fontWeight: 600, color: V2_T.text.secondary, letterSpacing: '0.02em' } }, '任务'),
-        narrow
-          ? null
-          : h('button', {
-              type: 'button',
-              title: '收起清单栏',
-              onClick: toggleListPane,
-              style: v2IconBtnStyle({ width: 18, height: 18 }),
-            }, h(V2Icon, { name: 'chevL', size: 12 })),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 2 } },
+          /* #13：搜索入口放在左栏清单区首行（放大镜展开输入框，"/" 快捷键同样生效） */
+          h('button', {
+            type: 'button',
+            title: '搜索任务（/）',
+            'aria-label': '搜索任务',
+            'aria-expanded': state.searchOpen ? 'true' : 'false',
+            onClick: function onClick() {
+              searchFocusRef.current = true
+              update({ searchOpen: true })
+              /* 搜索框已经展开时，点击放大镜直接聚焦；首次展开由 focusSearchInput effect 负责 */
+              if (searchInputRef.current) searchInputRef.current.focus()
+            },
+            style: v2IconBtnStyle({ width: 18, height: 18 }),
+          }, h(V2Icon, { name: 'search', size: 13 })),
+          narrow
+            ? null
+            : h('button', {
+                type: 'button',
+                title: '收起清单栏',
+                onClick: toggleListPane,
+                style: v2IconBtnStyle({ width: 18, height: 18 }),
+              }, h(V2Icon, { name: 'chevL', size: 12 })),
+        ),
       ),
+      state.searchOpen
+        ? h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 8px' } },
+            h(V2Icon, { name: 'search', size: 13, color: V2_T.text.tertiary }),
+            h('input', {
+              ref: searchInputRef,
+              value: state.query,
+              placeholder: '搜索任务标题或备注',
+              'aria-label': '搜索任务',
+              onChange: function onChange(e) { update({ query: e.target.value }) },
+              onKeyDown: function onKeyDown(e) {
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  update({ searchOpen: false, query: '' })
+                }
+              },
+              style: v2InputStyle({ fontSize: v2fs(12), padding: '4px 8px', height: 28, flex: '1 1 auto', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+            }),
+            h('button', {
+              type: 'button',
+              title: '关闭搜索',
+              'aria-label': '关闭搜索',
+              onClick: function onClick() { update({ searchOpen: false, query: '' }) },
+              style: v2IconBtnStyle({ width: 20, height: 20 }),
+            }, h(V2Icon, { name: 'close', size: 12 })),
+          )
+        : null,
       h(
         'div',
         { style: { flex: '1 1 auto', overflowY: 'auto', padding: '2px 8px 16px', minHeight: 0 } },
         shortcuts.map(function mapShortcut(item) {
           return navItem({ kind: item.kind }, item.label, scopeCountOf({ kind: item.kind }), item.icon)
         }),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '清单'),
-          h('button', {
-            type: 'button',
-            onClick: function onClick() { update({ newListOpen: true, newListName: '' }) },
-            style: v2IconBtnStyle({ width: 20, height: 20 }),
-          }, h(V2Icon, { name: 'plus', size: 12 })),
-        ),
+        sectionHeader('lists', '清单', h('button', {
+          type: 'button',
+          title: '新建清单',
+          onClick: function onClick() { update({ newListOpen: true, newListName: '' }) },
+          style: v2IconBtnStyle({ width: 20, height: 20 }),
+        }, h(V2Icon, { name: 'plus', size: 12 }))),
+        sectionBody('lists', [
         state.newListOpen
           ? h(
               'div',
@@ -12701,6 +13319,7 @@ function TaskTabV2(props) {
               h('input', {
                 autoFocus: true,
                 value: state.renameListText,
+                onFocus: function onFocus(e) { e.currentTarget.select() },
                 onChange: function onChange(e) { update({ renameListText: e.target.value }) },
                 onKeyDown: function onKeyDown(e) {
                   if (e.key === 'Enter') {
@@ -12782,37 +13401,31 @@ function TaskTabV2(props) {
             }, h(V2Icon, { name: 'more', size: 12 })),
           )
         }),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '过滤器'),
-        ),
-        navItem({ kind: 'filter', id: 'high', label: '本周高优先级' }, '本周高优先级', scopeCountOf({ kind: 'filter', id: 'high', label: '本周高优先级' }), 'filter'),
-        navItem({ kind: 'filter', id: 'meeting', label: '会议相关' }, '会议相关', scopeCountOf({ kind: 'filter', id: 'meeting', label: '会议相关' }), 'filter'),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '标签'),
-          h('button', {
-            type: 'button',
-            title: '编辑标签',
-            onClick: function onClick() { openTagEditor() },
-            style: v2IconBtnStyle({ width: 20, height: 20 }),
-          }, h(V2Icon, { name: 'settings', size: 12 })),
-        ),
-        state.tags.length
-          ? state.tags.map(function renderTag(tag) {
-              const count = scopeCountOf({ kind: 'tag', id: tag.id })
-              return navItem({ kind: 'tag', id: tag.id }, tag.name, count, 'tag')
-            })
-          : h('div', { style: { padding: '2px 10px', fontSize: v2fs(11), color: V2.faint } }, '暂无标签'),
-        h(
-          'div',
-          { style: { marginTop: 12, padding: '0 10px 4px' } },
-          h('span', { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.tertiary, letterSpacing: '0.02em' } }, '收纳区'),
-        ),
-        navItem({ kind: 'done' }, '已完成', state.done.length, 'done'),
-        navItem({ kind: 'trash' }, '垃圾桶', state.trash.length, 'trash'),
+        ]),
+        sectionHeader('filters', '过滤器'),
+        sectionBody('filters', [
+          navItem({ kind: 'filter', id: 'high', label: '本周高优先级' }, '本周高优先级', scopeCountOf({ kind: 'filter', id: 'high', label: '本周高优先级' }), 'filter'),
+          navItem({ kind: 'filter', id: 'meeting', label: '会议相关' }, '会议相关', scopeCountOf({ kind: 'filter', id: 'meeting', label: '会议相关' }), 'filter'),
+        ]),
+        sectionHeader('tags', '标签', h('button', {
+          type: 'button',
+          title: '编辑标签',
+          onClick: function onClick() { openTagEditor() },
+          style: v2IconBtnStyle({ width: 20, height: 20 }),
+        }, h(V2Icon, { name: 'settings', size: 12 }))),
+        sectionBody('tags', [
+          state.tags.length
+            ? state.tags.map(function renderTag(tag) {
+                const count = scopeCountOf({ kind: 'tag', id: tag.id })
+                return navItem({ kind: 'tag', id: tag.id }, tag.name, count, 'tag')
+              })
+            : h('div', { style: { padding: '2px 10px', fontSize: v2fs(11), color: V2.faint } }, '暂无标签'),
+        ]),
+        sectionHeader('archive', '收纳区'),
+        sectionBody('archive', [
+          navItem({ kind: 'done' }, '已完成', state.done.length, 'done'),
+          navItem({ kind: 'trash' }, '垃圾桶', state.trash.length, 'trash'),
+        ]),
       ),
     )
   }
@@ -12829,8 +13442,9 @@ function TaskTabV2(props) {
       return h(Banner, { tone: 'error' }, '加载失败：' + state.error)
     }
     const flatScope = state.scope.kind === 'done' || state.scope.kind === 'trash'
+    const query = String(state.query || '').trim()
     const visible = tasks
-      .filter(function filter(task) { return v2TaskMatchesText(task, '') })
+      .filter(function filter(task) { return v2TaskMatchesText(task, query) })
       .filter(function filter(task) {
         if (flatScope) return true
         return !v2TaskParentId(task)
@@ -12839,8 +13453,15 @@ function TaskTabV2(props) {
       const listScope = state.scope.kind === 'list'
       if (listScope) {
         /* 清单为空也要渲染分组列表与“新建分组”行：
-           否则空清单只剩快速添加一个入口，无法在此清单建分组 */
-        return renderGroupedList([])
+           否则空清单只剩快速添加一个入口，无法在此清单建分组；
+           搜索无结果时不渲染分组（避免误以为有匹配任务）。 */
+        if (!query) return renderGroupedList([])
+      }
+      if (query) {
+        return h(EmptyState, {
+          title: '没有匹配的任务',
+          hint: '换个关键词，或清空搜索框',
+        })
       }
       return h(EmptyState, {
         title: state.scope.kind === 'trash' ? '垃圾桶是空的' : '这里还没有任务',
@@ -12955,6 +13576,8 @@ function TaskTabV2(props) {
               ? h('input', {
                   autoFocus: true,
                   value: state.renameGroupText,
+                  /* 按钮/菜单入口进入重命名：保持全选（与任务名点击定位光标的语义区分） */
+                  onFocus: function onFocus(e) { e.currentTarget.select() },
                   onChange: function onChange(e) { update({ renameGroupText: e.target.value }) },
                   onKeyDown: function onKeyDown(e) {
                     if (e.key === 'Enter') {
@@ -12996,6 +13619,7 @@ function TaskTabV2(props) {
                 'div',
                 { style: { display: 'flex', gap: 4, padding: '4px 12px 6px' } },
                 h('input', {
+                  ref: groupAddInputRef,
                   autoFocus: true,
                   value: state.groupAddText,
                   placeholder: '任务标题，回车创建',
@@ -13188,8 +13812,12 @@ function TaskTabV2(props) {
     const row = h(TaskArowV2, {
       key: task.id,
       task: task,
-      selected: state.selectedId === task.id || state.selectedIds.indexOf(task.id) >= 0,
+      /* #2：多选模式下高亮只由 selectedIds 驱动，单选残留的 selectedId 不再参与 */
+      selected: state.selectionMode ? state.selectedIds.indexOf(task.id) >= 0 : state.selectedId === task.id,
+      selectMode: state.selectionMode,
       editing: state.editingId === task.id,
+      /* #9：鼠标点击标题进入编辑时按点击位置定位光标；键盘/按钮入口为 -1 → 全选 */
+      editCaret: state.editingId === task.id ? editCaretRef.current : -1,
       childCount: children.length,
       doneChild: doneChild,
       /* 看板列内用浮起卡片视觉；列表/详情内保持扁平行（仅样式变体） */
@@ -13199,7 +13827,11 @@ function TaskTabV2(props) {
       onOpen: state.selectionMode
         ? function onSelect(target) { toggleSelect(target.id) }
         : openDetail,
-      onStartEdit: function onStartEdit(target) { update({ editingId: target.id }) },
+      onSelectToggle: function onSelectToggle(target) { toggleSelect(target.id) },
+      onStartEdit: function onStartEdit(target, caret) {
+        editCaretRef.current = typeof caret === 'number' && caret >= 0 ? caret : -1
+        update({ editingId: target.id })
+      },
       onCancelEdit: function onCancelEdit() { update({ editingId: null }) },
       onCommitTitle: function onCommitTitle(title) { commitTitle(task.id, title, task.rev) },
       onMore: openTaskMenu,
@@ -13260,7 +13892,7 @@ function TaskTabV2(props) {
         h('input', {
           ref: inputRef,
           value: state.quickAdd,
-          placeholder: '添加任务，回车创建（可写“明天上午 9 点 !高”）',
+          placeholder: '添加任务，回车创建（可写“明天上午 9 点 !高”；按 N 随时聚焦到这里）',
           onChange: function onChange(e) {
             const value = e.target.value
             const parsed = value.trim() ? v2ParseTarget(value, todayIso()) : null
@@ -13287,7 +13919,7 @@ function TaskTabV2(props) {
         }),
         state.quickAddHint
           ? h('span', { style: { fontSize: v2fs(11), color: V2_T.accent.base, whiteSpace: 'nowrap' } }, state.quickAddHint)
-          : h('span', { style: { fontSize: v2fs(11), color: V2_T.text.tertiary, whiteSpace: 'nowrap' } }, 'N 聚焦'),
+          : null,
       ),
     )
   }
@@ -13297,7 +13929,7 @@ function TaskTabV2(props) {
     const count = scopeCountOf(state.scope)
     return h(
       'div',
-      { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, background: V2_T.surface.app } },
+      { style: { flex: '1 1 auto', minWidth: 0, maxWidth: narrow || !state.detail ? 'none' : '50%', display: 'flex', flexDirection: 'column', minHeight: 0, background: V2_T.surface.app } },
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px', height: V2_T.line.header, minHeight: V2_T.line.header, boxSizing: 'border-box', borderBottom: '1px solid ' + V2_T.border.subtle } },
@@ -13318,7 +13950,7 @@ function TaskTabV2(props) {
             type: 'button',
             title: state.selectionMode ? '退出多选' : '多选任务',
             onClick: function onClick() {
-              update({ selectionMode: !state.selectionMode, selectedIds: [] })
+              changeSelectionMode(!state.selectionMode)
             },
             style: v2ToolbarBtnStyle(state.selectionMode),
             onMouseEnter: function onEnter(e) { e.currentTarget.style.background = V2_T.surface.panel2 },
@@ -13370,7 +14002,11 @@ function TaskTabV2(props) {
       renderQuickAdd(),
       h(
         'div',
-        { style: { flex: '1 1 auto', overflowY: 'auto', minHeight: 0 } },
+        {
+          ref: listScrollRef,
+          onScroll: onListScroll,
+          style: { flex: '1 1 auto', overflowY: 'auto', minHeight: 0 },
+        },
         renderTasksForScope(tasks),
       ),
     )
@@ -13389,11 +14025,13 @@ function TaskTabV2(props) {
         ref: detailRef,
         style: {
           width: narrow ? 'auto' : panes.detail,
-          flex: narrow ? '1 1 auto' : '0 0 ' + panes.detail + 'px',
+          /* #14：中间列表栏被限制在总宽 50% 以内，详情栏吸收剩余宽度，避免右侧留白 */
+          flex: narrow ? '1 1 auto' : '1 1 ' + panes.detail + 'px',
           borderLeft: narrow ? 'none' : '1px solid ' + V2_T.border.subtle,
           display: 'flex',
           flexDirection: 'column',
           minHeight: 0,
+          minWidth: narrow ? 0 : 280,
           background: V2_T.surface.shell,
         },
       },
@@ -13455,19 +14093,54 @@ function TaskTabV2(props) {
           'div',
           { style: Object.assign(v2CardStyle({ padding: '6px 12px', marginBottom: 12 }), { display: 'grid', gridTemplateColumns: '76px 1fr', columnGap: 8, rowGap: 0, gridAutoRows: 'minmax(34px, auto)', alignItems: 'center', fontSize: v2fs(12) }) },
           h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '日期'),
-          h('input', {
-            type: 'date',
-            value: v2TaskDateKey(task) || '',
-            onChange: function onChange(e) {
-              const value = e.target.value || null
-              patchTask(task.id, task.rev, {
-                scheduledDate: value,
-                scheduledStartAt: null,
-                scheduledEndAt: null,
-              }, null)
-            },
-            style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
-          }),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' } },
+            h('input', {
+              type: 'date',
+              value: v2TaskDateKey(task) || '',
+              onChange: function onChange(e) {
+                const value = e.target.value || null
+                patchTask(task.id, task.rev, {
+                  scheduledDate: value,
+                  scheduledStartAt: null,
+                  scheduledEndAt: null,
+                }, null)
+              },
+              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, flex: '0 0 auto', width: 132, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
+            }),
+            /* #19：快捷日期——今天 / 明天 / 下周（今天 +7 天） */
+            h('button', {
+              type: 'button',
+              title: '设为今天',
+              onClick: function onClick() {
+                patchTask(task.id, task.rev, { scheduledDate: addDaysKey(todayIso(), 0), scheduledStartAt: null, scheduledEndAt: null }, null)
+              },
+              style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 24, padding: '0 7px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.secondary }),
+              onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+              onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            }, '今天'),
+            h('button', {
+              type: 'button',
+              title: '设为明天',
+              onClick: function onClick() {
+                patchTask(task.id, task.rev, { scheduledDate: addDaysKey(todayIso(), 1), scheduledStartAt: null, scheduledEndAt: null }, null)
+              },
+              style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 24, padding: '0 7px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.secondary }),
+              onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+              onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            }, '明天'),
+            h('button', {
+              type: 'button',
+              title: '设为下周（今天 +7 天）',
+              onClick: function onClick() {
+                patchTask(task.id, task.rev, { scheduledDate: addDaysKey(todayIso(), 7), scheduledStartAt: null, scheduledEndAt: null }, null)
+              },
+              style: v2BtnStyle('ghost', { fontSize: v2fs(11), height: 24, padding: '0 7px', borderRadius: V2_T.radius.sm, background: V2_T.surface.panel3, color: V2_T.text.secondary }),
+              onFocus: function onFocus(e) { Object.assign(e.currentTarget.style, v2FocusRing({})) },
+              onBlur: function onBlur(e) { e.currentTarget.style.boxShadow = 'none' },
+            }, '下周'),
+          ),
           h('span', { style: { color: V2_T.text.tertiary, fontSize: v2fs(12) } }, '时间'),
           h(
             'div',
@@ -13699,7 +14372,19 @@ function TaskTabV2(props) {
             onChange: function onChange(e) { update({ detail: Object.assign({}, task, { notes: e.target.value }) }) },
             onBlur: function onBlur(e) {
               const value = e.target.value
-              if (value !== (task.notes || '')) patchTask(task.id, task.rev, { notes: value || null }, null)
+              /* 与“打开详情时的已提交值”比较（task.notes 已随 onChange 变化，直接比较会恒等） */
+              const base = detailNotesRef.current.id === task.id ? detailNotesRef.current.notes : (task.notes || '')
+              if (value === base) return
+              patchTask(task.id, task.rev, { notes: value || null }, null).then(function onSaved(ok) {
+                if (ok) detailNotesRef.current = { id: task.id, notes: value }
+              })
+            },
+            onKeyDown: function onKeyDown(e) {
+              if (e.key !== 'Escape') return
+              const base = detailNotesRef.current.id === task.id ? detailNotesRef.current.notes : (task.notes || '')
+              update({ detail: Object.assign({}, task, { notes: base }) })
+              e.preventDefault()
+              e.currentTarget.blur()
             },
             style: v2InputStyle({ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: v2fs(13), lineHeight: '20px', minHeight: 88, padding: '8px 10px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
           }),
@@ -17221,7 +17906,7 @@ function CalendarTabV2(props) {
   )
 }
 
-/* ---- 40-habits.js (3781 lines) ---- */
+/* ---- 40-habits.js (3819 lines) ---- */
 /* ═══════════════════════ M6 · V2 习惯 Tab ═══════════════════════
  * 入口：HabitTabV2({ runtime, narrow })
  * 数据源：GET /habits、GET /habits/stats、GET /habits/:id/checkins、GET /habits/month
@@ -17236,8 +17921,29 @@ function CalendarTabV2(props) {
 
 const HABIT_LIST_WIDTH = 400
 const HABIT_PANES_STORAGE_KEY = 'lifeos.v2.habitPanes'
+const HABIT_STATE_KEY = 'lifeos.v2.state.habit'
 const HABIT_LIST_MIN = 320
 const HABIT_LIST_MAX = 560
+
+function habitRestoreState() {
+  try {
+    const raw = window.localStorage.getItem(HABIT_STATE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(parsed.date || '')) ? String(parsed.date) : null
+    const monthKey = /^\d{4}-\d{2}$/.test(String(parsed.monthKey || '')) ? String(parsed.monthKey) : null
+    const collapsed = parsed.collapsed && typeof parsed.collapsed === 'object' ? parsed.collapsed : null
+    return {
+      date: date,
+      monthKey: monthKey,
+      selectedId: typeof parsed.selectedId === 'string' ? parsed.selectedId : null,
+      collapsed: collapsed,
+    }
+  } catch (error) {
+    return null
+  }
+}
 
 function habitClampListWidth(value) {
   const num = Number(value)
@@ -19095,18 +19801,19 @@ function HabitTabV2(props) {
 
   const [state, setState] = useState(function initial() {
     const today = habitToday()
+    const saved = habitRestoreState()
     return {
       loading: true,
       error: null,
       today: today,
-      date: today,
-      monthKey: habitMonthKeyOf(today),
+      date: (saved && saved.date) || today,
+      monthKey: (saved && saved.monthKey) || habitMonthKeyOf((saved && saved.date) || today),
       habits: [],
       stats: {},
       checkins: {},
       months: {},
-      selectedId: null,
-      collapsed: { plan: false, flex: false, paused: true },
+      selectedId: (saved && saved.selectedId) || null,
+      collapsed: (saved && saved.collapsed) || { plan: false, flex: false, paused: true },
       busyKey: null,
       menu: null,
       confirmDialog: null,
@@ -19117,6 +19824,22 @@ function HabitTabV2(props) {
   const stateRef = useRef(state)
   stateRef.current = state
   const pendingRef = useRef({})
+
+  useEffect(function persistHabitState() {
+    try {
+      window.localStorage.setItem(
+        HABIT_STATE_KEY,
+        JSON.stringify({
+          date: state.date,
+          monthKey: state.monthKey,
+          selectedId: state.selectedId,
+          collapsed: state.collapsed,
+        }),
+      )
+    } catch (error) {
+      /* 忽略写入失败 */
+    }
+  }, [state.date, state.monthKey, state.selectedId, state.collapsed])
 
   function update(patch) {
     setState(function merge(prev) {
@@ -21002,7 +21725,7 @@ function HabitTabV2(props) {
   )
 }
 
-/* ---- 50-notes.js (3384 lines) ---- */
+/* ---- 50-notes.js (3618 lines) ---- */
 /* ═══════════════════════ M6 · V2 笔记 Tab ═══════════════════════ */
 /* NotesTabV2：左侧文件树（日记/随记快捷分组 + 最近 5 条 + 完整工作区目录树 +
    搜索 / 新建 / 多选 / 拖拽移动）+ 右侧 Markdown 编辑器（自动保存、预览、标签、冲突提示）。
@@ -21016,6 +21739,11 @@ const V2_NOTES_RECENT_LIMIT = 5
 const V2_NOTES_MOCK_HINT = '本地模拟模式：Host 未连接，修改不会写入磁盘'
 const V2_NOTES_MONO_FONT = "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace"
 const V2_NOTES_PANES_STORAGE_KEY = 'lifeos.v2.notesPanes'
+/* #4 页面状态记忆：当前文件 / 树展开 / 编辑-预览模式（损坏时回退默认） */
+const V2_NOTES_UI_STATE_KEY = 'lifeos.v2.state.notes'
+/* #22 自写窗口：新建 / 保存 / 重命名后 6s 内文件监听回声不当作外部修改；无路径标记时 2s 兜底 */
+const V2_NOTES_SELF_WRITE_WINDOW = 6000
+const V2_NOTES_SELF_WRITE_FALLBACK = 2000
 const V2_NOTES_TREE_MIN = 180
 const V2_NOTES_TREE_MAX = 420
 const V2_NOTES_EDITOR_MIN = 420
@@ -21049,6 +21777,45 @@ function v2NotesReadPanes() {
 function v2NotesSavePanes(panes) {
   try {
     window.localStorage.setItem(V2_NOTES_PANES_STORAGE_KEY, JSON.stringify(panes))
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+function v2NotesCleanBoolMap(value) {
+  const map = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return map
+  Object.keys(value).slice(0, 300).forEach(function each(key) {
+    const name = String(key || '')
+    if (!name) return
+    map[name] = value[name] === true
+  })
+  return map
+}
+
+function v2NotesReadUiState() {
+  const fallback = { path: '', preview: false, expanded: {}, groups: {}, showAll: {}, mobileView: 'tree' }
+  try {
+    const raw = window.localStorage.getItem(V2_NOTES_UI_STATE_KEY)
+    if (!raw) return fallback
+    const value = JSON.parse(raw)
+    if (!value || typeof value !== 'object') return fallback
+    return {
+      path: typeof value.path === 'string' ? value.path : '',
+      preview: value.preview === true,
+      expanded: v2NotesCleanBoolMap(value.expanded),
+      groups: v2NotesCleanBoolMap(value.groups),
+      showAll: v2NotesCleanBoolMap(value.showAll),
+      mobileView: value.mobileView === 'editor' ? 'editor' : 'tree',
+    }
+  } catch (error) {
+    return fallback
+  }
+}
+
+function v2NotesSaveUiState(value) {
+  try {
+    window.localStorage.setItem(V2_NOTES_UI_STATE_KEY, JSON.stringify(value || {}))
   } catch (error) {
     /* ignore */
   }
@@ -21807,6 +22574,10 @@ function NotesTabV2(props) {
   const narrow = props.narrow === true
   const fallbackState = { phase: 'idle', mock: false, config: {}, tree: {}, search: {}, doc: {}, preview: false }
   const notesState = props.notesState || (notes && typeof notes.getState === 'function' ? notes.getState() : null) || fallbackState
+  /* #4：只在首次挂载读取一次本地记忆，后续由持久化副作用更新 */
+  const savedUiRef = useRef(null)
+  if (savedUiRef.current === null) savedUiRef.current = v2NotesReadUiState()
+  const savedUi = savedUiRef.current
 
   const config = notesState.config || {}
   const configData = config.data || {}
@@ -21818,14 +22589,22 @@ function NotesTabV2(props) {
   const [dialog, setDialog] = useState(null)
   const [selMode, setSelMode] = useState(false)
   const [selected, setSelected] = useState({})
-  const [groups, setGroups] = useState({ diary: true, scratch: true })
-  const [showAll, setShowAll] = useState({ diary: false, scratch: false })
-  const [expandedLocal, setExpandedLocal] = useState({})
+  const [groups, setGroups] = useState(function initGroups() {
+    return Object.assign({ diary: true, scratch: true }, savedUi.groups)
+  })
+  const [showAll, setShowAll] = useState(function initShowAll() {
+    return Object.assign({ diary: false, scratch: false }, savedUi.showAll)
+  })
+  const [expandedLocal, setExpandedLocal] = useState(function initExpanded() {
+    return Object.assign({}, savedUi.expanded)
+  })
   const [tagMap, setTagMap] = useState(v2NotesLoadTags)
   const [tagRemote, setTagRemote] = useState(true)
   const [tagEditing, setTagEditing] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
-  const [mobileView, setMobileView] = useState('tree')
+  const [mobileView, setMobileView] = useState(function initMobileView() {
+    return savedUi.mobileView === 'editor' ? 'editor' : 'tree'
+  })
   const [titleDraft, setTitleDraft] = useState('')
   const [batchBusy, setBatchBusy] = useState(false)
   const [dragOver, setDragOver] = useState('')
@@ -21842,6 +22621,12 @@ function NotesTabV2(props) {
   panesRef.current = panes
   const paneWidthRef = useRef(paneWidth)
   paneWidthRef.current = paneWidth
+  /* #4 恢复流程只跑一次；预览模式在目标文件打开后再补一次 toggle */
+  const restoredUiRef = useRef(false)
+  const pendingPreviewRef = useRef(null)
+  const pendingPreviewPathRef = useRef('')
+  /* #22 自写标记：path -> 失效时间戳，外加最近一次自写时间兜底 */
+  const selfWriteRef = useRef({ at: 0, paths: {} })
 
   function updatePanes(patch) {
     setPanes(function merge(prev) {
@@ -21921,7 +22706,15 @@ function NotesTabV2(props) {
     runtime.toast('info', '笔记字号：' + next.label)
   }
   const saveDelay = notesPrefs.notesAutosaveMs || (configData.options && configData.options.autosaveMs) || 800
-  const workNodes = useMemo(function buildTree() { return v2NotesBuildTree(entries) }, [entries])
+  /* #25：日记 / 随记 已在顶部固定分组展示，工作区树不再重复渲染这两个保留目录及子项 */
+  const workEntries = useMemo(function filterReservedDirs() {
+    return entries.filter(function keep(entry) {
+      if (!entry || !entry.path) return false
+      const top = String(entry.path).split('/')[0]
+      return top !== V2_NOTES_DIARY_DIR && top !== V2_NOTES_SCRATCH_DIR
+    })
+  }, [entries])
+  const workNodes = useMemo(function buildTree() { return v2NotesBuildTree(workEntries) }, [workEntries])
   const allDirs = useMemo(function buildDirs() {
     const seen = {}
     const list = []
@@ -21940,7 +22733,8 @@ function NotesTabV2(props) {
     return list
   }, [entries])
   const selectedPaths = Object.keys(selected)
-  const totalNotes = entries.filter(function filter(entry) { return entry && entry.type !== 'dir' }).length
+  /* #25：工作区不再渲染 日记 / 随记，计数也只统计工作区内的笔记，避免“N 篇”与实际树不符 */
+  const totalNotes = workEntries.filter(function filter(entry) { return entry && entry.type !== 'dir' }).length
   const docTags = doc.path && Array.isArray(tagMap[doc.path]) ? tagMap[doc.path] : []
 
   function readState() {
@@ -21956,6 +22750,47 @@ function NotesTabV2(props) {
       runtime.toast(kind, message)
     } catch (error) {
       try { console.warn('[notes] ' + message) } catch (ignore) { /* ignore */ }
+    }
+  }
+
+  /* #22：标记“这次写盘是我们自己发起的”，用于识别文件监听回声 */
+  function markSelfWrite(paths) {
+    const now = Date.now()
+    const list = Array.isArray(paths) ? paths : [paths]
+    const previous = (selfWriteRef.current && selfWriteRef.current.paths) || {}
+    const map = {}
+    Object.keys(previous).forEach(function each(path) {
+      if ((Number(previous[path]) || 0) > now) map[path] = previous[path]
+    })
+    list.forEach(function each(path) {
+      const value = String(path || '')
+      if (!value) return
+      map[value] = now + V2_NOTES_SELF_WRITE_WINDOW
+    })
+    selfWriteRef.current = { at: now, paths: map }
+  }
+
+  function recentSelfWrite(path) {
+    const marks = selfWriteRef.current || {}
+    const now = Date.now()
+    const target = String(path || '')
+    if (target && marks.paths && (Number(marks.paths[target]) || 0) > now) return true
+    return now - (Number(marks.at) || 0) <= V2_NOTES_SELF_WRITE_FALLBACK
+  }
+
+  function isPathExistsError(error) {
+    const message = String((error && error.message) || error || '')
+    const code = String((error && error.code) || '')
+    if (/不存在/.test(message)) return false
+    return /path_exists/i.test(code) || /已存在|exist/i.test(message)
+  }
+
+  /* 树可能过期：写操作前同步一次，避免把“已存在”误判为需要新建（#25 path_exists） */
+  async function syncTree() {
+    try {
+      await notes.loadTree()
+    } catch (error) {
+      /* 同步失败时沿用现有树兜底 */
     }
   }
 
@@ -22164,13 +22999,33 @@ function NotesTabV2(props) {
   }
 
   async function ensureFolder(name) {
-    const exists = treeEntries().some(function some(entry) { return entry && entry.type === 'dir' && entry.path === name })
-    if (exists) return true
+    const target = String(name || '')
+    if (!target) return true
+    function hasDir() {
+      return treeEntries().some(function some(entry) { return entry && entry.type === 'dir' && entry.path === target })
+    }
+    if (hasDir()) return true
+    /* 树可能过期：先同步一次再判断，避免把已存在的保留目录当成“新建”而触发 path_exists */
+    await syncTree()
+    if (hasDir()) return true
+    if (mock || typeof notesFolderApi !== 'function') {
+      try {
+        await notes.createFolder('', target)
+      } catch (error) {
+        notify('error', '创建文件夹失败：' + errorText(error))
+        return false
+      }
+      await refreshTree()
+      return true
+    }
     try {
-      await notes.createFolder('', name)
+      /* 直连建目录端点：目录已存在（并发 / 树过期）时幂等成功，不再弹“新建文件夹失败” */
+      await notesFolderApi(target, false)
     } catch (error) {
-      notify('error', '创建文件夹失败：' + errorText(error))
-      return false
+      if (!isPathExistsError(error)) {
+        notify('error', '创建文件夹失败：' + errorText(error))
+        return false
+      }
     }
     await refreshTree()
     return true
@@ -22213,16 +23068,20 @@ function NotesTabV2(props) {
     setDialog(null)
     const targetDir = String(dirPath || '')
     const cleaned = v2NotesSanitizeName(v2NotesStripExt(rawName), '')
+    await syncTree()
     try {
       if (!cleaned) {
         await notes.createNote(targetDir)
       } else {
         const name = v2NotesUniqueName(cleaned + '.md', function exists(candidate) { return fileExistsIn(targetDir, candidate) })
+        /* #22：新建后的文件监听回声属于自写 */
+        markSelfWrite(v2NotesJoin(targetDir, name))
         await notes.createNote(targetDir, name)
       }
       const after = readState()
       const path = after.doc && after.doc.path
       if (path) {
+        markSelfWrite(path)
         expandAncestors(path)
         if (narrow) setMobileView('editor')
       }
@@ -22262,6 +23121,7 @@ function NotesTabV2(props) {
   async function createDiary() {
     const ok = await ensureFolder(V2_NOTES_DIARY_DIR)
     if (!ok) return
+    await syncTree()
     const target = V2_NOTES_DIARY_DIR + '/' + todayIso() + '.md'
     if (pathExists(target)) {
       await openNote(target)
@@ -22269,10 +23129,15 @@ function NotesTabV2(props) {
       return
     }
     try {
+      /* #22：新建后的文件监听回声属于自写，不当作“外部修改” */
+      markSelfWrite(target)
       await notes.createNote(V2_NOTES_DIARY_DIR, todayIso() + '.md')
       const after = readState()
       const path = after.doc && after.doc.path
-      if (path) expandAncestors(path)
+      if (path) {
+        markSelfWrite(path)
+        expandAncestors(path)
+      }
       if (narrow) setMobileView('editor')
     } catch (error) {
       const message = errorText(error) || ''
@@ -22287,12 +23152,15 @@ function NotesTabV2(props) {
   async function createScratch() {
     const ok = await ensureFolder(V2_NOTES_SCRATCH_DIR)
     if (!ok) return
+    await syncTree()
     try {
       const name = v2NotesUniqueName('未命名笔记.md', function exists(candidate) { return fileExistsIn(V2_NOTES_SCRATCH_DIR, candidate) })
+      markSelfWrite(v2NotesJoin(V2_NOTES_SCRATCH_DIR, name))
       await notes.createNote(V2_NOTES_SCRATCH_DIR, name)
       const after = readState()
       const path = after.doc && after.doc.path
       if (path) {
+        markSelfWrite(path)
         scratchRef.current[path] = true
         expandAncestors(path)
         if (narrow) setMobileView('editor')
@@ -22321,6 +23189,8 @@ function NotesTabV2(props) {
       return full !== docState.path && pathExists(full)
     })
     try {
+      /* #22：重命名会触发旧路径 unlink / 新路径 add 监听事件，先标记为自写再执行 */
+      markSelfWrite([docState.path, v2NotesJoin(dir, target)])
       await notes.renamePath(docState.path, target)
     } catch (error) {
       notify('error', '重命名失败：' + errorText(error))
@@ -22342,6 +23212,8 @@ function NotesTabV2(props) {
       return full !== path && pathExists(full)
     })
     try {
+      /* #22：文件夹重命名同样先标记自写 */
+      markSelfWrite([path, v2NotesJoin(parent, target)])
       await notes.renamePath(path, target)
     } catch (error) {
       notify('error', '重命名文件夹失败：' + errorText(error))
@@ -22362,8 +23234,8 @@ function NotesTabV2(props) {
     }
     setBatchBusy(false)
     exitSelMode()
-    if (failed) notify('error', '有 ' + failed + ' 项删除失败')
-    else notify('success', paths.length > 1 ? '已删除 ' + paths.length + ' 项（可在 .trash 恢复）' : '已删除（可在 .trash 恢复）')
+    /* #25：删除成功提示由 notes runtime（removePath）统一给出，组件不再重复 toast，避免弹两次 */
+    if (failed > 1) notify('error', '有 ' + failed + ' 项删除失败')
     refreshTree()
   }
 
@@ -22393,6 +23265,7 @@ function NotesTabV2(props) {
         continue
       }
       try {
+        markSelfWrite([source, v2NotesJoin(dirTarget, name)])
         await notes.renamePath(source, v2NotesMoveTarget(dirTarget, name))
         moved += 1
       } catch (error) {
@@ -22460,9 +23333,21 @@ function NotesTabV2(props) {
 
   function saveNow(force) {
     try {
-      notes.saveNow(force === undefined ? true : force === true)
+      const result = notes.saveNow(force === undefined ? true : force === true)
+      /* #22：保存成功记下自写标记，供文件监听回声识别（runtime 侧 2s 窗口之外的兜底） */
+      if (result && typeof result.then === 'function') {
+        result.then(function onSaved() {
+          const path = currentPath()
+          if (path) markSelfWrite(path)
+        }).catch(function onFailed() { /* runtime 已 toast 保存失败 */ })
+      } else {
+        const path = currentPath()
+        if (path) markSelfWrite(path)
+      }
+      return result
     } catch (error) {
       notify('error', '保存失败：' + errorText(error))
+      return null
     }
   }
 
@@ -23044,7 +23929,7 @@ function NotesTabV2(props) {
       ),
       nodes.length
         ? nodes.map(function map(node) { return renderNode(node, 0) })
-        : treeLoading
+        : treeLoading || entries.length
           ? null
           : h('div', { style: { padding: '6px 10px', fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '17px' } }, '目录为空，点击上方 ＋ 新建第一篇笔记。'),
     )
@@ -23691,7 +24576,8 @@ function NotesTabV2(props) {
           ],
         ),
       )
-    } else if (docState.external) {
+    } else if (docState.external && !(docState.dirty !== true && docState.saving !== true && recentSelfWrite(docState.external.path))) {
+      /* #22：自写（新建 / 保存 / 重命名）触发的监听回声不展示“外部修改”横幅 */
       rows.push(
         renderBanner('external', 'warn', '文件已在外部被修改', '重新加载可获取磁盘上的最新内容；忽略后不会自动刷新。', [
           { label: '重新加载', kind: 'soft', onClick: reloadCurrent },
@@ -24175,6 +25061,8 @@ function NotesTabV2(props) {
     const target = v2NotesJoin(dir, name)
     if (target === docState.path) return
     try {
+      /* #22：自动改名同属自写，标记新旧路径避免误报外部修改 */
+      markSelfWrite([docState.path, target])
       notes.renamePath(docState.path, name)
     } catch (error) {
       /* ignore */
@@ -24201,6 +25089,75 @@ function NotesTabV2(props) {
       clearTimeout(timer)
     }
   }, [configPhase])
+
+  /* #22：自写后的文件监听回声去抖——确认不是自写、或仍有本地未保存内容时才保留“外部修改”告警 */
+  useEffect(function dismissSelfWriteExternal() {
+    const external = doc.external
+    if (!external || !external.path) return undefined
+    if (external.path !== doc.path) return undefined
+    if (doc.dirty === true || doc.saving === true) return undefined
+    if (!recentSelfWrite(external.path)) return undefined
+    const timer = setTimeout(function dismiss() {
+      if (!mountedRef.current) return
+      try { notes.dismissExternal() } catch (error) { /* ignore */ }
+    }, 600)
+    return function cleanup() {
+      clearTimeout(timer)
+    }
+  }, [doc.external && doc.external.path, doc.external && doc.external.at, doc.path, doc.dirty, doc.saving])
+
+  /* #4：进入笔记 Tab 时恢复上次打开的文件（文件已不存在则跳过，不覆盖记忆） */
+  useEffect(function restoreLastFile() {
+    if (restoredUiRef.current) return
+    if (!notes || typeof notes.openFile !== 'function') return
+    if (!configReady || mock || treeLoading) return
+    const saved = savedUiRef.current
+    restoredUiRef.current = true
+    if (!saved || !saved.path) return
+    const exists = entries.some(function some(entry) { return entry && entry.path === saved.path })
+    if (!exists) return
+    const state = readState()
+    const currentDoc = (state.doc && state.doc.path) || ''
+    if (currentDoc && currentDoc !== saved.path) return
+    pendingPreviewRef.current = saved.preview === true
+    pendingPreviewPathRef.current = saved.path
+    /* runtime 里已经打开的就是目标文件：只需等 ready 后补上预览模式 */
+    if (currentDoc === saved.path) return
+    expandAncestors(saved.path)
+    try {
+      const opening = notes.openFile(saved.path)
+      if (opening && typeof opening.catch === 'function') opening.catch(function ignore() { /* 打开失败时保持空编辑器 */ })
+    } catch (error) {
+      /* ignore */
+    }
+  }, [configReady, mock, treeLoading, entries])
+
+  /* #4：文件打开后补上预览/编辑模式（runtime 只提供 togglePreview） */
+  useEffect(function restorePreviewMode() {
+    const pending = pendingPreviewRef.current
+    if (pending === null || pending === undefined) return
+    if (!doc.path || (doc.phase !== 'ready' && doc.phase !== 'error')) return
+    if (doc.path !== pendingPreviewPathRef.current) return
+    if (doc.phase === 'ready' && preview !== pending) {
+      try { notes.togglePreview() } catch (error) { /* ignore */ }
+    }
+    pendingPreviewRef.current = null
+    pendingPreviewPathRef.current = ''
+  }, [doc.path, doc.phase, preview])
+
+  /* #4：持久化当前文件 / 树展开 / 编辑-预览模式 / 快捷分组状态 */
+  useEffect(function persistUiState() {
+    if (!mountedRef.current) return
+    if (!restoredUiRef.current) return
+    v2NotesSaveUiState({
+      path: doc.path || '',
+      preview: preview === true,
+      expanded: expandedLocal,
+      groups: groups,
+      showAll: showAll,
+      mobileView: mobileView,
+    })
+  }, [doc.path, preview, expandedLocal, groups, showAll, mobileView])
 
   /* ---------- 布局 ---------- */
 
@@ -24387,7 +25344,7 @@ function NotesTabV2(props) {
   return renderRoot()
 }
 
-/* ---- 60-settings.js (503 lines) ---- */
+/* ---- 60-settings.js (505 lines) ---- */
 /* ═══════════════════════ M12 · LifeOS 设置页（V2） ═══════════════════════
  * 目标：替换 M0 诊断页，呈现当前四个页签真正可用的偏好设置。
  * 存储：localStorage['lifeos.v2.settings']（本机、无 Host schema 变更）；
@@ -24409,7 +25366,7 @@ const V2_SETTINGS_DEFAULTS = {
 }
 
 const V2_SETTINGS_ENUMS = {
-  uiFontSize: ['small', 'medium', 'large', 'xlarge'],
+  uiFontSize: ['smaller', 'small', 'medium', 'large', 'larger'],
   taskView: ['list', 'board'],
   taskSort: ['custom', 'created', 'date', 'priority'],
   calendarView: ['month', 'week', 'day'],
@@ -24418,7 +25375,7 @@ const V2_SETTINGS_ENUMS = {
 }
 
 const V2_SETTINGS_LABELS = {
-  uiFontSize: { small: '小', medium: '中', large: '大', xlarge: '超大' },
+  uiFontSize: { smaller: '更小', small: '小', medium: '中', large: '大', larger: '更大' },
   taskView: { list: '列表', board: '看板' },
   taskSort: { custom: '自定义', created: '创建时间', date: '日期', priority: '优先级' },
   calendarView: { month: '月', week: '周', day: '日' },
@@ -24443,6 +25400,8 @@ function v2ReadSettings() {
     const raw = window.localStorage.getItem(V2_SETTINGS_KEY)
     if (!raw) return next
     const parsed = JSON.parse(raw)
+    // 旧四档迁移：xlarge → larger（值同为 1.18），避免老用户设置回退为默认。
+    if (parsed && parsed.uiFontSize === 'xlarge') parsed.uiFontSize = 'larger'
     Object.keys(V2_SETTINGS_DEFAULTS).forEach(function readKey(key) {
       next[key] = v2SettingsPick(parsed, key, V2_SETTINGS_DEFAULTS[key])
     })

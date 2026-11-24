@@ -12,8 +12,29 @@
 
 const HABIT_LIST_WIDTH = 400
 const HABIT_PANES_STORAGE_KEY = 'lifeos.v2.habitPanes'
+const HABIT_STATE_KEY = 'lifeos.v2.state.habit'
 const HABIT_LIST_MIN = 320
 const HABIT_LIST_MAX = 560
+
+function habitRestoreState() {
+  try {
+    const raw = window.localStorage.getItem(HABIT_STATE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(parsed.date || '')) ? String(parsed.date) : null
+    const monthKey = /^\d{4}-\d{2}$/.test(String(parsed.monthKey || '')) ? String(parsed.monthKey) : null
+    const collapsed = parsed.collapsed && typeof parsed.collapsed === 'object' ? parsed.collapsed : null
+    return {
+      date: date,
+      monthKey: monthKey,
+      selectedId: typeof parsed.selectedId === 'string' ? parsed.selectedId : null,
+      collapsed: collapsed,
+    }
+  } catch (error) {
+    return null
+  }
+}
 
 function habitClampListWidth(value) {
   const num = Number(value)
@@ -1871,18 +1892,19 @@ function HabitTabV2(props) {
 
   const [state, setState] = useState(function initial() {
     const today = habitToday()
+    const saved = habitRestoreState()
     return {
       loading: true,
       error: null,
       today: today,
-      date: today,
-      monthKey: habitMonthKeyOf(today),
+      date: (saved && saved.date) || today,
+      monthKey: (saved && saved.monthKey) || habitMonthKeyOf((saved && saved.date) || today),
       habits: [],
       stats: {},
       checkins: {},
       months: {},
-      selectedId: null,
-      collapsed: { plan: false, flex: false, paused: true },
+      selectedId: (saved && saved.selectedId) || null,
+      collapsed: (saved && saved.collapsed) || { plan: false, flex: false, paused: true },
       busyKey: null,
       menu: null,
       confirmDialog: null,
@@ -1893,6 +1915,22 @@ function HabitTabV2(props) {
   const stateRef = useRef(state)
   stateRef.current = state
   const pendingRef = useRef({})
+
+  useEffect(function persistHabitState() {
+    try {
+      window.localStorage.setItem(
+        HABIT_STATE_KEY,
+        JSON.stringify({
+          date: state.date,
+          monthKey: state.monthKey,
+          selectedId: state.selectedId,
+          collapsed: state.collapsed,
+        }),
+      )
+    } catch (error) {
+      /* 忽略写入失败 */
+    }
+  }, [state.date, state.monthKey, state.selectedId, state.collapsed])
 
   function update(patch) {
     setState(function merge(prev) {
