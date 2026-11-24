@@ -19,7 +19,7 @@ const V2_SETTINGS_DEFAULTS = {
 }
 
 const V2_SETTINGS_ENUMS = {
-  uiFontSize: ['small', 'medium', 'large', 'xlarge'],
+  uiFontSize: ['smaller', 'small', 'medium', 'large', 'larger'],
   taskView: ['list', 'board'],
   taskSort: ['custom', 'created', 'date', 'priority'],
   calendarView: ['month', 'week', 'day'],
@@ -28,7 +28,7 @@ const V2_SETTINGS_ENUMS = {
 }
 
 const V2_SETTINGS_LABELS = {
-  uiFontSize: { small: '小', medium: '中', large: '大', xlarge: '超大' },
+  uiFontSize: { smaller: '更小', small: '小', medium: '中', large: '大', larger: '更大' },
   taskView: { list: '列表', board: '看板' },
   taskSort: { custom: '自定义', created: '创建时间', date: '日期', priority: '优先级' },
   calendarView: { month: '月', week: '周', day: '日' },
@@ -53,6 +53,8 @@ function v2ReadSettings() {
     const raw = window.localStorage.getItem(V2_SETTINGS_KEY)
     if (!raw) return next
     const parsed = JSON.parse(raw)
+    // 旧四档迁移：xlarge → larger（值同为 1.18），避免老用户设置回退为默认。
+    if (parsed && parsed.uiFontSize === 'xlarge') parsed.uiFontSize = 'larger'
     Object.keys(V2_SETTINGS_DEFAULTS).forEach(function readKey(key) {
       next[key] = v2SettingsPick(parsed, key, V2_SETTINGS_DEFAULTS[key])
     })

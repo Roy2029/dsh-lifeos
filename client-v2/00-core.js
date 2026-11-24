@@ -17,10 +17,10 @@ function v2UiEnabled() {
   }
 }
 
-/* ── 全局界面字号（小/中/大/超大） ──
+/* ── 全局界面字号（更小/小/中/大/更大） ──
  * 说明：任务/日历/习惯/设置页共用 --v2-font-scale 根变量缩放文字；笔记编辑器字号单独在笔记内调整。
  * 设置存储仍由 60-settings 负责，这里只读取 uiFontSize 并派发 CSS 变量，避免核心层依赖设置模块。 */
-const V2_FONT_SCALE_CHOICES = { small: 0.92, medium: 1, large: 1.08, xlarge: 1.18 }
+const V2_FONT_SCALE_CHOICES = { smaller: 0.86, small: 0.92, medium: 1, large: 1.08, larger: 1.18 }
 let v2FontScaleCache = null
 
 function v2FontScale() {
@@ -30,7 +30,8 @@ function v2FontScale() {
     const raw = window.localStorage.getItem('lifeos.v2.settings')
     const parsed = raw ? JSON.parse(raw) : null
     const chosen = parsed && parsed.uiFontSize
-    scale = V2_FONT_SCALE_CHOICES[chosen] || 1
+    // 兼容旧四档：xlarge → larger（同为 1.18）
+    scale = V2_FONT_SCALE_CHOICES[chosen === 'xlarge' ? 'larger' : chosen] || 1
   } catch (error) {
     scale = 1
   }

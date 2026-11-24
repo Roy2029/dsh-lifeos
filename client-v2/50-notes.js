@@ -11,6 +11,11 @@ const V2_NOTES_RECENT_LIMIT = 5
 const V2_NOTES_MOCK_HINT = '本地模拟模式：Host 未连接，修改不会写入磁盘'
 const V2_NOTES_MONO_FONT = "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace"
 const V2_NOTES_PANES_STORAGE_KEY = 'lifeos.v2.notesPanes'
+/* #4 页面状态记忆：当前文件 / 树展开 / 编辑-预览模式（损坏时回退默认） */
+const V2_NOTES_UI_STATE_KEY = 'lifeos.v2.state.notes'
+/* #22 自写窗口：新建 / 保存 / 重命名后 6s 内文件监听回声不当作外部修改；无路径标记时 2s 兜底 */
+const V2_NOTES_SELF_WRITE_WINDOW = 6000
+const V2_NOTES_SELF_WRITE_FALLBACK = 2000
 const V2_NOTES_TREE_MIN = 180
 const V2_NOTES_TREE_MAX = 420
 const V2_NOTES_EDITOR_MIN = 420
@@ -44,6 +49,45 @@ function v2NotesReadPanes() {
 function v2NotesSavePanes(panes) {
   try {
     window.localStorage.setItem(V2_NOTES_PANES_STORAGE_KEY, JSON.stringify(panes))
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+function v2NotesCleanBoolMap(value) {
+  const map = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return map
+  Object.keys(value).slice(0, 300).forEach(function each(key) {
+    const name = String(key || '')
+    if (!name) return
+    map[name] = value[name] === true
+  })
+  return map
+}
+
+function v2NotesReadUiState() {
+  const fallback = { path: '', preview: false, expanded: {}, groups: {}, showAll: {}, mobileView: 'tree' }
+  try {
+    const raw = window.localStorage.getItem(V2_NOTES_UI_STATE_KEY)
+    if (!raw) return fallback
+    const value = JSON.parse(raw)
+    if (!value || typeof value !== 'object') return fallback
+    return {
+      path: typeof value.path === 'string' ? value.path : '',
+      preview: value.preview === true,
+      expanded: v2NotesCleanBoolMap(value.expanded),
+      groups: v2NotesCleanBoolMap(value.groups),
+      showAll: v2NotesCleanBoolMap(value.showAll),
+      mobileView: value.mobileView === 'editor' ? 'editor' : 'tree',
+    }
+  } catch (error) {
+    return fallback
+  }
+}
+
+function v2NotesSaveUiState(value) {
+  try {
+    window.localStorage.setItem(V2_NOTES_UI_STATE_KEY, JSON.stringify(value || {}))
   } catch (error) {
     /* ignore */
   }
@@ -802,6 +846,10 @@ function NotesTabV2(props) {
   const narrow = props.narrow === true
   const fallbackState = { phase: 'idle', mock: false, config: {}, tree: {}, search: {}, doc: {}, preview: false }
   const notesState = props.notesState || (notes && typeof notes.getState === 'function' ? notes.getState() : null) || fallbackState
+  /* #4：只在首次挂载读取一次本地记忆，后续由持久化副作用更新 */
+  const savedUiRef = useRef(null)
+  if (savedUiRef.current === null) savedUiRef.current = v2NotesReadUiState()
+  const savedUi = savedUiRef.current
 
   const config = notesState.config || {}
   const configData = config.data || {}
@@ -813,14 +861,22 @@ function NotesTabV2(props) {
   const [dialog, setDialog] = useState(null)
   const [selMode, setSelMode] = useState(false)
   const [selected, setSelected] = useState({})
-  const [groups, setGroups] = useState({ diary: true, scratch: true })
-  const [showAll, setShowAll] = useState({ diary: false, scratch: false })
-  const [expandedLocal, setExpandedLocal] = useState({})
+  const [groups, setGroups] = useState(function initGroups() {
+    return Object.assign({ diary: true, scratch: true }, savedUi.groups)
+  })
+  const [showAll, setShowAll] = useState(function initShowAll() {
+    return Object.assign({ diary: false, scratch: false }, savedUi.showAll)
+  })
+  const [expandedLocal, setExpandedLocal] = useState(function initExpanded() {
+    return Object.assign({}, savedUi.expanded)
+  })
   const [tagMap, setTagMap] = useState(v2NotesLoadTags)
   const [tagRemote, setTagRemote] = useState(true)
   const [tagEditing, setTagEditing] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
-  const [mobileView, setMobileView] = useState('tree')
+  const [mobileView, setMobileView] = useState(function initMobileView() {
+    return savedUi.mobileView === 'editor' ? 'editor' : 'tree'
+  })
   const [titleDraft, setTitleDraft] = useState('')
   const [batchBusy, setBatchBusy] = useState(false)
   const [dragOver, setDragOver] = useState('')
@@ -837,6 +893,12 @@ function NotesTabV2(props) {
   panesRef.current = panes
   const paneWidthRef = useRef(paneWidth)
   paneWidthRef.current = paneWidth
+  /* #4 恢复流程只跑一次；预览模式在目标文件打开后再补一次 toggle */
+  const restoredUiRef = useRef(false)
+  const pendingPreviewRef = useRef(null)
+  const pendingPreviewPathRef = useRef('')
+  /* #22 自写标记：path -> 失效时间戳，外加最近一次自写时间兜底 */
+  const selfWriteRef = useRef({ at: 0, paths: {} })
 
   function updatePanes(patch) {
     setPanes(function merge(prev) {
@@ -916,7 +978,15 @@ function NotesTabV2(props) {
     runtime.toast('info', '笔记字号：' + next.label)
   }
   const saveDelay = notesPrefs.notesAutosaveMs || (configData.options && configData.options.autosaveMs) || 800
-  const workNodes = useMemo(function buildTree() { return v2NotesBuildTree(entries) }, [entries])
+  /* #25：日记 / 随记 已在顶部固定分组展示，工作区树不再重复渲染这两个保留目录及子项 */
+  const workEntries = useMemo(function filterReservedDirs() {
+    return entries.filter(function keep(entry) {
+      if (!entry || !entry.path) return false
+      const top = String(entry.path).split('/')[0]
+      return top !== V2_NOTES_DIARY_DIR && top !== V2_NOTES_SCRATCH_DIR
+    })
+  }, [entries])
+  const workNodes = useMemo(function buildTree() { return v2NotesBuildTree(workEntries) }, [workEntries])
   const allDirs = useMemo(function buildDirs() {
     const seen = {}
     const list = []
@@ -935,7 +1005,8 @@ function NotesTabV2(props) {
     return list
   }, [entries])
   const selectedPaths = Object.keys(selected)
-  const totalNotes = entries.filter(function filter(entry) { return entry && entry.type !== 'dir' }).length
+  /* #25：工作区不再渲染 日记 / 随记，计数也只统计工作区内的笔记，避免“N 篇”与实际树不符 */
+  const totalNotes = workEntries.filter(function filter(entry) { return entry && entry.type !== 'dir' }).length
   const docTags = doc.path && Array.isArray(tagMap[doc.path]) ? tagMap[doc.path] : []
 
   function readState() {
@@ -951,6 +1022,47 @@ function NotesTabV2(props) {
       runtime.toast(kind, message)
     } catch (error) {
       try { console.warn('[notes] ' + message) } catch (ignore) { /* ignore */ }
+    }
+  }
+
+  /* #22：标记“这次写盘是我们自己发起的”，用于识别文件监听回声 */
+  function markSelfWrite(paths) {
+    const now = Date.now()
+    const list = Array.isArray(paths) ? paths : [paths]
+    const previous = (selfWriteRef.current && selfWriteRef.current.paths) || {}
+    const map = {}
+    Object.keys(previous).forEach(function each(path) {
+      if ((Number(previous[path]) || 0) > now) map[path] = previous[path]
+    })
+    list.forEach(function each(path) {
+      const value = String(path || '')
+      if (!value) return
+      map[value] = now + V2_NOTES_SELF_WRITE_WINDOW
+    })
+    selfWriteRef.current = { at: now, paths: map }
+  }
+
+  function recentSelfWrite(path) {
+    const marks = selfWriteRef.current || {}
+    const now = Date.now()
+    const target = String(path || '')
+    if (target && marks.paths && (Number(marks.paths[target]) || 0) > now) return true
+    return now - (Number(marks.at) || 0) <= V2_NOTES_SELF_WRITE_FALLBACK
+  }
+
+  function isPathExistsError(error) {
+    const message = String((error && error.message) || error || '')
+    const code = String((error && error.code) || '')
+    if (/不存在/.test(message)) return false
+    return /path_exists/i.test(code) || /已存在|exist/i.test(message)
+  }
+
+  /* 树可能过期：写操作前同步一次，避免把“已存在”误判为需要新建（#25 path_exists） */
+  async function syncTree() {
+    try {
+      await notes.loadTree()
+    } catch (error) {
+      /* 同步失败时沿用现有树兜底 */
     }
   }
 
@@ -1159,13 +1271,33 @@ function NotesTabV2(props) {
   }
 
   async function ensureFolder(name) {
-    const exists = treeEntries().some(function some(entry) { return entry && entry.type === 'dir' && entry.path === name })
-    if (exists) return true
+    const target = String(name || '')
+    if (!target) return true
+    function hasDir() {
+      return treeEntries().some(function some(entry) { return entry && entry.type === 'dir' && entry.path === target })
+    }
+    if (hasDir()) return true
+    /* 树可能过期：先同步一次再判断，避免把已存在的保留目录当成“新建”而触发 path_exists */
+    await syncTree()
+    if (hasDir()) return true
+    if (mock || typeof notesFolderApi !== 'function') {
+      try {
+        await notes.createFolder('', target)
+      } catch (error) {
+        notify('error', '创建文件夹失败：' + errorText(error))
+        return false
+      }
+      await refreshTree()
+      return true
+    }
     try {
-      await notes.createFolder('', name)
+      /* 直连建目录端点：目录已存在（并发 / 树过期）时幂等成功，不再弹“新建文件夹失败” */
+      await notesFolderApi(target, false)
     } catch (error) {
-      notify('error', '创建文件夹失败：' + errorText(error))
-      return false
+      if (!isPathExistsError(error)) {
+        notify('error', '创建文件夹失败：' + errorText(error))
+        return false
+      }
     }
     await refreshTree()
     return true
@@ -1208,16 +1340,20 @@ function NotesTabV2(props) {
     setDialog(null)
     const targetDir = String(dirPath || '')
     const cleaned = v2NotesSanitizeName(v2NotesStripExt(rawName), '')
+    await syncTree()
     try {
       if (!cleaned) {
         await notes.createNote(targetDir)
       } else {
         const name = v2NotesUniqueName(cleaned + '.md', function exists(candidate) { return fileExistsIn(targetDir, candidate) })
+        /* #22：新建后的文件监听回声属于自写 */
+        markSelfWrite(v2NotesJoin(targetDir, name))
         await notes.createNote(targetDir, name)
       }
       const after = readState()
       const path = after.doc && after.doc.path
       if (path) {
+        markSelfWrite(path)
         expandAncestors(path)
         if (narrow) setMobileView('editor')
       }
@@ -1257,6 +1393,7 @@ function NotesTabV2(props) {
   async function createDiary() {
     const ok = await ensureFolder(V2_NOTES_DIARY_DIR)
     if (!ok) return
+    await syncTree()
     const target = V2_NOTES_DIARY_DIR + '/' + todayIso() + '.md'
     if (pathExists(target)) {
       await openNote(target)
@@ -1264,10 +1401,15 @@ function NotesTabV2(props) {
       return
     }
     try {
+      /* #22：新建后的文件监听回声属于自写，不当作“外部修改” */
+      markSelfWrite(target)
       await notes.createNote(V2_NOTES_DIARY_DIR, todayIso() + '.md')
       const after = readState()
       const path = after.doc && after.doc.path
-      if (path) expandAncestors(path)
+      if (path) {
+        markSelfWrite(path)
+        expandAncestors(path)
+      }
       if (narrow) setMobileView('editor')
     } catch (error) {
       const message = errorText(error) || ''
@@ -1282,12 +1424,15 @@ function NotesTabV2(props) {
   async function createScratch() {
     const ok = await ensureFolder(V2_NOTES_SCRATCH_DIR)
     if (!ok) return
+    await syncTree()
     try {
       const name = v2NotesUniqueName('未命名笔记.md', function exists(candidate) { return fileExistsIn(V2_NOTES_SCRATCH_DIR, candidate) })
+      markSelfWrite(v2NotesJoin(V2_NOTES_SCRATCH_DIR, name))
       await notes.createNote(V2_NOTES_SCRATCH_DIR, name)
       const after = readState()
       const path = after.doc && after.doc.path
       if (path) {
+        markSelfWrite(path)
         scratchRef.current[path] = true
         expandAncestors(path)
         if (narrow) setMobileView('editor')
@@ -1316,6 +1461,8 @@ function NotesTabV2(props) {
       return full !== docState.path && pathExists(full)
     })
     try {
+      /* #22：重命名会触发旧路径 unlink / 新路径 add 监听事件，先标记为自写再执行 */
+      markSelfWrite([docState.path, v2NotesJoin(dir, target)])
       await notes.renamePath(docState.path, target)
     } catch (error) {
       notify('error', '重命名失败：' + errorText(error))
@@ -1337,6 +1484,8 @@ function NotesTabV2(props) {
       return full !== path && pathExists(full)
     })
     try {
+      /* #22：文件夹重命名同样先标记自写 */
+      markSelfWrite([path, v2NotesJoin(parent, target)])
       await notes.renamePath(path, target)
     } catch (error) {
       notify('error', '重命名文件夹失败：' + errorText(error))
@@ -1357,8 +1506,8 @@ function NotesTabV2(props) {
     }
     setBatchBusy(false)
     exitSelMode()
-    if (failed) notify('error', '有 ' + failed + ' 项删除失败')
-    else notify('success', paths.length > 1 ? '已删除 ' + paths.length + ' 项（可在 .trash 恢复）' : '已删除（可在 .trash 恢复）')
+    /* #25：删除成功提示由 notes runtime（removePath）统一给出，组件不再重复 toast，避免弹两次 */
+    if (failed > 1) notify('error', '有 ' + failed + ' 项删除失败')
     refreshTree()
   }
 
@@ -1388,6 +1537,7 @@ function NotesTabV2(props) {
         continue
       }
       try {
+        markSelfWrite([source, v2NotesJoin(dirTarget, name)])
         await notes.renamePath(source, v2NotesMoveTarget(dirTarget, name))
         moved += 1
       } catch (error) {
@@ -1455,9 +1605,21 @@ function NotesTabV2(props) {
 
   function saveNow(force) {
     try {
-      notes.saveNow(force === undefined ? true : force === true)
+      const result = notes.saveNow(force === undefined ? true : force === true)
+      /* #22：保存成功记下自写标记，供文件监听回声识别（runtime 侧 2s 窗口之外的兜底） */
+      if (result && typeof result.then === 'function') {
+        result.then(function onSaved() {
+          const path = currentPath()
+          if (path) markSelfWrite(path)
+        }).catch(function onFailed() { /* runtime 已 toast 保存失败 */ })
+      } else {
+        const path = currentPath()
+        if (path) markSelfWrite(path)
+      }
+      return result
     } catch (error) {
       notify('error', '保存失败：' + errorText(error))
+      return null
     }
   }
 
@@ -2039,7 +2201,7 @@ function NotesTabV2(props) {
       ),
       nodes.length
         ? nodes.map(function map(node) { return renderNode(node, 0) })
-        : treeLoading
+        : treeLoading || entries.length
           ? null
           : h('div', { style: { padding: '6px 10px', fontSize: V2_T.font.caption, color: V2_T.text.tertiary, lineHeight: '17px' } }, '目录为空，点击上方 ＋ 新建第一篇笔记。'),
     )
@@ -2686,7 +2848,8 @@ function NotesTabV2(props) {
           ],
         ),
       )
-    } else if (docState.external) {
+    } else if (docState.external && !(docState.dirty !== true && docState.saving !== true && recentSelfWrite(docState.external.path))) {
+      /* #22：自写（新建 / 保存 / 重命名）触发的监听回声不展示“外部修改”横幅 */
       rows.push(
         renderBanner('external', 'warn', '文件已在外部被修改', '重新加载可获取磁盘上的最新内容；忽略后不会自动刷新。', [
           { label: '重新加载', kind: 'soft', onClick: reloadCurrent },
@@ -3170,6 +3333,8 @@ function NotesTabV2(props) {
     const target = v2NotesJoin(dir, name)
     if (target === docState.path) return
     try {
+      /* #22：自动改名同属自写，标记新旧路径避免误报外部修改 */
+      markSelfWrite([docState.path, target])
       notes.renamePath(docState.path, name)
     } catch (error) {
       /* ignore */
@@ -3196,6 +3361,75 @@ function NotesTabV2(props) {
       clearTimeout(timer)
     }
   }, [configPhase])
+
+  /* #22：自写后的文件监听回声去抖——确认不是自写、或仍有本地未保存内容时才保留“外部修改”告警 */
+  useEffect(function dismissSelfWriteExternal() {
+    const external = doc.external
+    if (!external || !external.path) return undefined
+    if (external.path !== doc.path) return undefined
+    if (doc.dirty === true || doc.saving === true) return undefined
+    if (!recentSelfWrite(external.path)) return undefined
+    const timer = setTimeout(function dismiss() {
+      if (!mountedRef.current) return
+      try { notes.dismissExternal() } catch (error) { /* ignore */ }
+    }, 600)
+    return function cleanup() {
+      clearTimeout(timer)
+    }
+  }, [doc.external && doc.external.path, doc.external && doc.external.at, doc.path, doc.dirty, doc.saving])
+
+  /* #4：进入笔记 Tab 时恢复上次打开的文件（文件已不存在则跳过，不覆盖记忆） */
+  useEffect(function restoreLastFile() {
+    if (restoredUiRef.current) return
+    if (!notes || typeof notes.openFile !== 'function') return
+    if (!configReady || mock || treeLoading) return
+    const saved = savedUiRef.current
+    restoredUiRef.current = true
+    if (!saved || !saved.path) return
+    const exists = entries.some(function some(entry) { return entry && entry.path === saved.path })
+    if (!exists) return
+    const state = readState()
+    const currentDoc = (state.doc && state.doc.path) || ''
+    if (currentDoc && currentDoc !== saved.path) return
+    pendingPreviewRef.current = saved.preview === true
+    pendingPreviewPathRef.current = saved.path
+    /* runtime 里已经打开的就是目标文件：只需等 ready 后补上预览模式 */
+    if (currentDoc === saved.path) return
+    expandAncestors(saved.path)
+    try {
+      const opening = notes.openFile(saved.path)
+      if (opening && typeof opening.catch === 'function') opening.catch(function ignore() { /* 打开失败时保持空编辑器 */ })
+    } catch (error) {
+      /* ignore */
+    }
+  }, [configReady, mock, treeLoading, entries])
+
+  /* #4：文件打开后补上预览/编辑模式（runtime 只提供 togglePreview） */
+  useEffect(function restorePreviewMode() {
+    const pending = pendingPreviewRef.current
+    if (pending === null || pending === undefined) return
+    if (!doc.path || (doc.phase !== 'ready' && doc.phase !== 'error')) return
+    if (doc.path !== pendingPreviewPathRef.current) return
+    if (doc.phase === 'ready' && preview !== pending) {
+      try { notes.togglePreview() } catch (error) { /* ignore */ }
+    }
+    pendingPreviewRef.current = null
+    pendingPreviewPathRef.current = ''
+  }, [doc.path, doc.phase, preview])
+
+  /* #4：持久化当前文件 / 树展开 / 编辑-预览模式 / 快捷分组状态 */
+  useEffect(function persistUiState() {
+    if (!mountedRef.current) return
+    if (!restoredUiRef.current) return
+    v2NotesSaveUiState({
+      path: doc.path || '',
+      preview: preview === true,
+      expanded: expandedLocal,
+      groups: groups,
+      showAll: showAll,
+      mobileView: mobileView,
+    })
+  }, [doc.path, preview, expandedLocal, groups, showAll, mobileView])
 
   /* ---------- 布局 ---------- */
 

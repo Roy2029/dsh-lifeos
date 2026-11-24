@@ -842,15 +842,54 @@ async function runM6SelfCheck(force) {
 }
 
 
+/* ── 全局快速记录：草稿自动保存（#15） ── */
+const V2_CAPTURE_DRAFT_KEY = 'lifeos.v2.captureDraft'
+
+function v2ReadCaptureDraft() {
+  try {
+    const raw = window.localStorage.getItem(V2_CAPTURE_DRAFT_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed.text !== 'string') return null
+    return { text: parsed.text, target: parsed.target === 'note' ? 'note' : 'task' }
+  } catch (error) {
+    return null
+  }
+}
+
+function v2WriteCaptureDraft(draft) {
+  try {
+    window.localStorage.setItem(V2_CAPTURE_DRAFT_KEY, JSON.stringify({ text: String(draft.text || ''), target: draft.target === 'note' ? 'note' : 'task' }))
+  } catch (error) {
+    /* 忽略写入失败 */
+  }
+}
+
+function v2ClearCaptureDraft() {
+  try {
+    window.localStorage.removeItem(V2_CAPTURE_DRAFT_KEY)
+  } catch (error) {
+    /* 忽略 */
+  }
+}
+
 /* ── 全局快速记录浮层（DSH 对话页也使用 V2 样式与提交语义） ── */
 function V2HostCaptureDialog(props) {
   const closeCallback = props && typeof props.onClose === 'function' ? props.onClose : null
   const savedCallback = props && typeof props.onSaved === 'function' ? props.onSaved : null
-  const [target, setTarget] = useState('task')
-  const [text, setText] = useState('')
+  const initialDraft = v2ReadCaptureDraft()
+  const [target, setTarget] = useState(initialDraft && initialDraft.target === 'note' ? 'note' : 'task')
+  const [text, setText] = useState(initialDraft && initialDraft.text ? initialDraft.text : '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [hintPulse, setHintPulse] = useState(false)
+  const [draftRestored] = useState(!!(initialDraft && initialDraft.text.trim()))
   const textareaRef = useRef(null)
+
+  useEffect(function persistDraft() {
+    if (String(text || '').trim()) v2WriteCaptureDraft({ text: text, target: target })
+    else v2ClearCaptureDraft()
+  }, [text, target])
 
   useEffect(function focusOnOpen() {
     const timer = setTimeout(function focusLater() {
@@ -893,6 +932,7 @@ function V2HostCaptureDialog(props) {
           /* ignore */
         }
       }
+      v2ClearCaptureDraft()
       close()
     } catch (error) {
       setError(errorText(error))
@@ -917,7 +957,14 @@ function V2HostCaptureDialog(props) {
       return
     }
     if (event.shiftKey) return
-    if (String(text || '').length > 30) return
+    if (String(text || '').length > 30) {
+      // 长内容 Enter 不会立即保存：给一次轻量反馈，说明 Shift+Enter 换行 / Ctrl+Enter 立即保存
+      setHintPulse(true)
+      setTimeout(function stopPulse() {
+        setHintPulse(false)
+      }, 1600)
+      return
+    }
     event.preventDefault()
     submit()
   }
@@ -963,6 +1010,11 @@ function V2HostCaptureDialog(props) {
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         h('div', { style: { fontSize: v2fs(13), fontWeight: 600, color: V2.text, flex: '1 1 auto' } }, '快速记录'),
+        h(
+          'span',
+          { title: 'Enter 保存；Shift+Enter 换行；Ctrl+Enter 立即保存；关闭后草稿会保留', 'aria-label': '输入规则', style: { width: 20, height: 20, borderRadius: 10, border: '1px solid ' + V2.line, color: V2.sub, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: v2fs(11), cursor: 'help' } },
+          'i',
+        ),
         h(
           'button',
           {
@@ -1014,7 +1066,7 @@ function V2HostCaptureDialog(props) {
         autoFocus: true,
         value: text,
         rows: 4,
-        placeholder: target === 'task' ? '记一条任务，Enter 保存' : '随手记点什么，Enter 保存（长文换行）',
+        placeholder: target === 'task' ? '记一条任务，Enter 保存；Shift+Enter 换行' : '随手记点什么，Enter 保存（长文用 Shift+Enter 换行，Ctrl+Enter 立即保存）',
         onChange: function onChange(event) {
           setText(event.target.value)
         },
@@ -1032,13 +1084,25 @@ function V2HostCaptureDialog(props) {
         }),
       }),
       error ? h('div', { style: { fontSize: v2fs(11), color: V2.danger, lineHeight: '17px' } }, error) : null,
+      draftRestored && !error
+        ? h('div', { style: { fontSize: v2fs(11), color: V2.faint, lineHeight: '16px' } }, '已恢复上次未发送的草稿')
+        : null,
       h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: v2fs(11), color: V2.faint } },
-        h('span', null, target === 'task' ? 'Enter 保存 · Shift+Enter 换行' : 'Enter 保存（长文换行）· Ctrl+Enter 保存'),
+        { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: v2fs(11), color: hintPulse ? V2.accent : V2.faint } },
+        h('span', null, 'Enter 保存 · Shift+Enter 换行' + (hintPulse ? ' · 内容较长，请用 Shift+Enter 换行' : '')),
         h('span', { style: { flex: '1 1 auto' } }),
         h('button', { type: 'button', onClick: close, style: v2BtnStyle('ghost') }, '取消'),
-        h('button', { type: 'button', disabled: saving, onClick: submit, style: v2BtnStyle('primary') }, saving ? '保存中…' : '保存'),
+        h(
+          'button',
+          {
+            type: 'button',
+            disabled: saving,
+            onClick: submit,
+            style: Object.assign({}, v2BtnStyle('primary'), hintPulse ? { boxShadow: '0 0 0 2px rgba(110,168,254,0.5)' } : null),
+          },
+          saving ? '保存中…' : '保存',
+        ),
       ),
     ),
   )

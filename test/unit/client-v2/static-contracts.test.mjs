@@ -115,18 +115,27 @@ test('client-v2：LifeOS 设置页（V2）接通并驱动四个页签', () => {
   assert.match(readV2('50-notes.js'), /fontSize: notesFontSize/)
 })
 
-test('client-v2：界面字号四档 / 笔记字号移入编辑器 / 拖拽插入线', () => {
+test('client-v2：界面字号五档 / 笔记字号移入编辑器 / 拖拽插入线 / 快速记录草稿', () => {
   const core = readV2('00-core.js')
   /* 根变量 + calc 缩放：只放大文字，不影响布局尺寸 */
   assert.match(core, /V2_FONT_SCALE_CHOICES/)
-  assert.match(core, /small: 0\.92/)
-  assert.match(core, /xlarge: 1\.18/)
+  assert.match(core, /smaller: 0\.86/)
+  assert.match(core, /larger: 1\.18/)
+  assert.match(core, /chosen === 'xlarge' \? 'larger' : chosen/)
   assert.match(core, /function v2fs\(size\)/)
   assert.match(core, /--v2-font-scale/)
   const settings = readV2('60-settings.js')
   assert.match(settings, /uiFontSize: 'medium'/)
   assert.match(settings, /'界面字号'/)
+  assert.match(settings, /'更小'/)
+  assert.match(settings, /parsed\.uiFontSize === 'xlarge'/)
   assert.doesNotMatch(settings, /'笔记编辑器字号'/)
+  /* 全局快速记录草稿（#15） */
+  const shell = readV2('10-shell.js')
+  assert.match(shell, /V2_CAPTURE_DRAFT_KEY/)
+  assert.match(shell, /function v2ReadCaptureDraft/)
+  assert.match(shell, /已恢复上次未发送的草稿/)
+  assert.match(shell, /内容较长，请用 Shift\+Enter 换行/)
   /* 笔记字号改在编辑器内循环切换（Aa） */
   const notes = readV2('50-notes.js')
   assert.match(notes, /NOTES_FONT_STEPS/)
