@@ -228,3 +228,27 @@ test('client-v2：M16 日期选择器 / 跨日切段 / 拖选 / 已完成模式 
   assert.match(calendar, /barGroupBy/)
   assert.match(calendar, /function buildBarGroups/)
 })
+test('client-v2：日历删除 / 跨日拖选 / 清单内置底已完成分组', () => {
+  const calendar = readV2('30-calendar.js')
+  const tasks = readV2('20-tasks.js')
+  /* 日历删除：月格拖出移出 + 任务栏 hover 垃圾桶 */
+  assert.match(calendar, /function deleteCalendarTask\(task\)/)
+  assert.match(calendar, /method: 'DELETE'/)
+  assert.match(calendar, /function finishMonthChipDrag\(event, task\)/)
+  assert.match(calendar, /data-cal2-month-grid/)
+  assert.match(calendar, /'移入垃圾桶'/)
+  /* 跨日拖选：draft 结构、按列命中、按天裁剪、跨日创建 */
+  assert.match(calendar, /function draftHasDay\(day\)/)
+  assert.match(calendar, /startDay/)
+  assert.match(calendar, /endDay/)
+  assert.match(calendar, /function dayColumnAt\(clientX, clientY\)/)
+  assert.match(calendar, /elementFromPoint/)
+  assert.match(calendar, /function beginMonthDateDraft\(event, day\)/)
+  assert.match(calendar, /data-cal2-date/)
+  assert.match(calendar, /kind: 'range'/)
+  assert.match(calendar, /function createRangeSpanTask\(\)/)
+  /* 已完成模式：移除 done-list、旧值迁移、默认分组内置底 */
+  assert.match(tasks, /V2_LIST_COMPLETED_LEGACY = \{ 'done-list': 'group-bottom' \}/)
+  assert.match(tasks, /移入分组内置底「已完成」分组/)
+  assert.doesNotMatch(tasks, /id: 'done-list'/)
+})

@@ -223,11 +223,13 @@ function v2WriteTaskState(snapshot) {
 const V2_LIST_COMPLETED_KEY = 'lifeos.v2.listCompletedMode'
 
 const V2_LIST_COMPLETED_MODES = [
-  { id: 'done-list', label: '移入「已完成」清单' },
   { id: 'inline', label: '原位显示并划线' },
-  { id: 'group-bottom', label: '分组底部「已完成」' },
+  { id: 'group-bottom', label: '移入分组内置底「已完成」分组' },
   { id: 'hidden', label: '本清单不显示' },
 ]
+
+/* 兼容旧版四模式：done-list 与 hidden 在列表内表现一致，历史上被误选，迁移到 group-bottom */
+const V2_LIST_COMPLETED_LEGACY = { 'done-list': 'group-bottom' }
 
 const V2_LIST_COMPLETED_DEFAULT = 'group-bottom'
 
@@ -244,7 +246,9 @@ function v2ReadListCompletedModes() {
     const out = {}
     Object.keys(parsed).forEach(function each(listId) {
       if (!listId) return
-      if (v2IsListCompletedMode(parsed[listId])) out[listId] = parsed[listId]
+      const stored = parsed[listId]
+      const mode = V2_LIST_COMPLETED_LEGACY[stored] || stored
+      if (v2IsListCompletedMode(mode)) out[listId] = mode
     })
     return out
   } catch (error) {
