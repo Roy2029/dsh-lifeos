@@ -21,7 +21,7 @@ const V2_PANE_MAIN_MIN = 420
 const V2_PANE_MAIN_MAX = 1000
 const V2_PANE_MAIN_DEFAULT = 660
 
-/* 过滤器：用户自定义，本地持久化（name + 规则类型 + 值） */
+/* 过滤器：用户自定义，本地持久化（名称 + 多条规则；多条规则同时满足 AND） */
 const V2_FILTERS_KEY = 'lifeos.v2.filters'
 const V2_FILTER_TYPES = [
   { id: 'priority', label: '优先级' },
@@ -30,8 +30,8 @@ const V2_FILTER_TYPES = [
   { id: 'due7', label: '本周到期' },
 ]
 const V2_FILTER_DEFAULTS = [
-  { id: 'high', name: '本周高优先级', type: 'priority', value: 'high' },
-  { id: 'meeting', name: '会议相关', type: 'keyword', value: '会' },
+  { id: 'high', name: '本周高优先级', conditions: [{ type: 'priority', value: 'high' }] },
+  { id: 'meeting', name: '会议相关', conditions: [{ type: 'keyword', value: '会' }] },
 ]
 
 /* 任务列表滚动区：始终显示可拖动滚动条，避免长列表时看不到位置 */
@@ -2908,9 +2908,9 @@ function TaskTabV2(props) {
         }
         const deleteBtn = button('删除', 'danger')
         deleteBtn.onclick = function onDelete() {
-          const raw = (stateRef.current.filters || []).filter(function f(item) { return item.id !== filter.id })
+          const raw = workingFilters.filter(function f(item) { return item.id !== filter.id })
           saveFilterDefs(raw)
-          renderRows()
+          renderRows(raw)
         }
         row.appendChild(nameInput)
         row.appendChild(typeSelect)
@@ -2950,6 +2950,324 @@ function TaskTabV2(props) {
       if (editId) {
         const rows = listBox.querySelectorAll('input')
         if (rows.length) rows[0].focus()
+      } else {
+        newName.focus()
+      }
+    }, 0)
+  }
+
+  /* 过滤器管理（多条件版）：每个过滤器可包含多条规则，规则之间为 AND 关系。 */
+  function openFilterEditor(editId) {
+    if (modalRef.current) return
+    modalRef.current = true
+    const mask = document.createElement('div')
+    Object.assign(mask.style, {
+      position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+      background: 'rgba(0,0,0,0.45)', zIndex: '99998', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    })
+    const panel = document.createElement('div')
+    Object.assign(panel.style, {
+      width: '560px', maxWidth: '94vw', maxHeight: '82vh', display: 'flex', flexDirection: 'column',
+      background: V2_T.surface.panel, border: '1px solid ' + V2_T.border.subtle,
+      borderRadius: V2_T.radius.lg + 'px', boxShadow: V2_T.shadow.pop, overflow: 'hidden',
+    })
+    let closed = false
+    function close() {
+      if (closed) return
+      closed = true
+      modalRef.current = false
+      if (mask.parentNode) mask.parentNode.removeChild(mask)
+      document.removeEventListener('keydown', onModalKey, true)
+    }
+    function onModalKey(event) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    }
+    function button(label, kind, extra) {
+      const el = document.createElement('button')
+      el.type = 'button'
+      el.textContent = label
+      Object.assign(el.style, v2BtnStyle(kind || 'ghost', Object.assign({ fontSize: v2fs(11), padding: '4px 10px', height: 26 }, extra || {})))
+      return el
+    }
+    function input(value, placeholder, width) {
+      const el = document.createElement('input')
+      el.value = value || ''
+      el.placeholder = placeholder || ''
+      Object.assign(el.style, v2InputStyle({ fontSize: v2fs(12), padding: '4px 8px', height: 26, width: width || '120px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }))
+      return el
+    }
+    function select(options, value) {
+      const el = document.createElement('select')
+      options.forEach(function each(option) {
+        const opt = document.createElement('option')
+        opt.value = option.value
+        opt.textContent = option.label
+        el.appendChild(opt)
+      })
+      el.value = value
+      Object.assign(el.style, v2InputStyle({ fontSize: v2fs(12), padding: '4px 6px', height: 26, width: '92px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }))
+      return el
+    }
+    function tagOptions() {
+      const options = (stateRef.current.tags || []).map(function map(tag) { return { value: tag.id, label: tag.name } })
+      if (!options.length) options.push({ value: '', label: '暂无标签' })
+      return options
+    }
+    function defaultValueOf(type) {
+      if (type === 'priority') return 'high'
+      if (type === 'tag') return (tagOptions()[0] || {}).value || ''
+      return ''
+    }
+    function valueControl(type, value, onChange) {
+      if (type === 'priority') {
+        const el = select([{ value: 'high', label: '高' }, { value: 'medium', label: '中' }, { value: 'low', label: '低' }], value || 'high')
+        el.onchange = function onchange() { onChange(el.value) }
+        return el
+      }
+      if (type === 'tag') {
+        const el = select(tagOptions(), value || tagOptions()[0].value)
+        el.onchange = function onchange() { onChange(el.value) }
+        return el
+      }
+      if (type === 'due7') {
+        const el = document.createElement('span')
+        el.textContent = '未来 7 天内到期'
+        Object.assign(el.style, { fontSize: v2fs(11), color: V2_T.text.tertiary, padding: '0 4px', height: 26, display: 'inline-flex', alignItems: 'center' })
+        return el
+      }
+      const el = input(value, '关键词', '140px')
+      el.oninput = function oninput() { onChange(el.value) }
+      return el
+    }
+    function conditionLabel(condition) {
+      if (!condition) return ''
+      if (condition.type === 'priority') {
+        const label = condition.value === 'high' ? '高' : condition.value === 'medium' ? '中' : '低'
+        return '优先级 = ' + label
+      }
+      if (condition.type === 'tag') {
+        const tag = (stateRef.current.tags || []).filter(function f(item) { return item.id === condition.value })[0]
+        return '标签 = ' + (tag ? tag.name : '未知标签')
+      }
+      if (condition.type === 'due7') return '本周到期'
+      return '关键词包含「' + String(condition.value || '') + '」'
+    }
+
+    const header = document.createElement('div')
+    Object.assign(header.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: '1px solid ' + V2.line })
+    const heading = document.createElement('span')
+    heading.textContent = '过滤器'
+    Object.assign(heading.style, { fontSize: v2fs(13), fontWeight: '600', color: V2_T.text.primary })
+    const closeBtn = document.createElement('button')
+    closeBtn.type = 'button'
+    closeBtn.textContent = '×'
+    closeBtn.title = '关闭'
+    Object.assign(closeBtn.style, v2IconBtnStyle({ width: '22px', height: '22px', fontSize: '15px', lineHeight: '18px' }))
+    closeBtn.onclick = close
+    header.appendChild(heading)
+    header.appendChild(closeBtn)
+
+    /* ── 新建区：名称 + 规则草稿（可多条） ── */
+    const createBox = document.createElement('div')
+    Object.assign(createBox.style, { display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px 12px', borderBottom: '1px solid ' + V2.line })
+    const createLine = document.createElement('div')
+    Object.assign(createLine.style, { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' })
+    const newName = input('', '过滤器名称', '140px')
+    const newType = select(V2_FILTER_TYPES.map(function map(item) { return { value: item.id, label: item.label } }), 'priority')
+    let newValue = 'high'
+    let newValueNode = valueControl('priority', 'high', function onChange(next) { newValue = next })
+    const addCondBtn = button('＋ 条件')
+    const createBtn = button('新建', 'primary')
+    const draftBox = document.createElement('div')
+    Object.assign(draftBox.style, { display: 'flex', flexWrap: 'wrap', gap: '4px' })
+    createLine.appendChild(newName)
+    createLine.appendChild(newType)
+    createLine.appendChild(newValueNode)
+    createLine.appendChild(addCondBtn)
+    createLine.appendChild(createBtn)
+    createBox.appendChild(createLine)
+    createBox.appendChild(draftBox)
+
+    const listBox = document.createElement('div')
+    Object.assign(listBox.style, { flex: '1 1 auto', overflowY: 'auto', padding: '4px 8px 10px', minHeight: '80px' })
+    const footer = document.createElement('div')
+    Object.assign(footer.style, { padding: '6px 12px 8px', fontSize: v2fs(11), color: V2_T.text.tertiary, borderTop: '1px solid ' + V2_T.border.subtle })
+    footer.textContent = '多个条件同时满足（AND）时任务才会出现在过滤器里；数据保存在本机 localStorage。'
+
+    panel.appendChild(header)
+    panel.appendChild(createBox)
+    panel.appendChild(listBox)
+    panel.appendChild(footer)
+    mask.appendChild(panel)
+    mask.addEventListener('mousedown', function onMask(event) { if (event.target === mask) close() })
+    document.body.appendChild(mask)
+    document.addEventListener('keydown', onModalKey, true)
+
+    let workingFilters = (stateRef.current.filters || []).slice()
+
+    function patchFilter(id, mutate) {
+      workingFilters = workingFilters.map(function map(filter) {
+        if (filter.id !== id) return filter
+        const next = mutate(filter)
+        return next || filter
+      })
+      saveFilterDefs(workingFilters)
+      return workingFilters
+    }
+    function setCondition(filterId, index, condition) {
+      patchFilter(filterId, function mutate(filter) {
+        const conditions = (filter.conditions || []).slice()
+        conditions[index] = condition
+        return Object.assign({}, filter, { conditions: conditions })
+      })
+    }
+    function addCondition(filterId) {
+      const type = 'priority'
+      const raw = patchFilter(filterId, function mutate(filter) {
+        return Object.assign({}, filter, { conditions: (filter.conditions || []).concat([{ type: type, value: defaultValueOf(type) }]) })
+      })
+      renderRows(raw)
+    }
+    function removeCondition(filterId, index) {
+      const filter = workingFilters.filter(function f(item) { return item.id === filterId })[0]
+      if (!filter) return
+      if ((filter.conditions || []).length <= 1) { runtime.toast('error', '至少保留一个条件'); return }
+      const raw = patchFilter(filterId, function mutate(item) {
+        return Object.assign({}, item, { conditions: (item.conditions || []).filter(function keep(_, i) { return i !== index }) })
+      })
+      renderRows(raw)
+    }
+
+    function renderRows(explicitFilters) {
+      if (closed) return
+      if (explicitFilters) workingFilters = explicitFilters.slice()
+      while (listBox.firstChild) listBox.removeChild(listBox.firstChild)
+      const filters = workingFilters.slice()
+      if (!filters.length) {
+        const empty = document.createElement('div')
+        empty.textContent = '暂无过滤器'
+        Object.assign(empty.style, { padding: '8px 6px', fontSize: v2fs(11), color: V2.faint })
+        listBox.appendChild(empty)
+        return
+      }
+      filters.forEach(function render(filter) {
+        const card = document.createElement('div')
+        Object.assign(card.style, { display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px 6px', borderBottom: '1px solid ' + V2.line })
+        const nameLine = document.createElement('div')
+        Object.assign(nameLine.style, { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' })
+        const nameInput = input(filter.name, '名称', '140px')
+        const summary = document.createElement('span')
+        summary.textContent = (filter.conditions || []).length + ' 个条件'
+        Object.assign(summary.style, { fontSize: v2fs(11), color: V2_T.text.tertiary, flex: '1 1 auto' })
+        const deleteBtn = button('删除', 'danger')
+        nameInput.onchange = function onName() {
+          const value = String(nameInput.value || '').trim() || filter.name
+          patchFilter(filter.id, function mutate(item) { return Object.assign({}, item, { name: value }) })
+        }
+        deleteBtn.onclick = function onDelete() {
+          const raw = workingFilters.filter(function f(item) { return item.id !== filter.id })
+          saveFilterDefs(raw)
+          renderRows(raw)
+        }
+        nameLine.appendChild(nameInput)
+        nameLine.appendChild(summary)
+        nameLine.appendChild(deleteBtn)
+        card.appendChild(nameLine)
+
+        const condBox = document.createElement('div')
+        Object.assign(condBox.style, { display: 'flex', flexDirection: 'column', gap: '4px', paddingLeft: '6px' })
+        ;(filter.conditions || []).forEach(function renderCondition(condition, index) {
+          const line = document.createElement('div')
+          Object.assign(line.style, { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' })
+          const typeSelect = select(V2_FILTER_TYPES.map(function map(item) { return { value: item.id, label: item.label } }), condition.type)
+          typeSelect.onchange = function onType() {
+            const nextType = typeSelect.value
+            setCondition(filter.id, index, { type: nextType, value: defaultValueOf(nextType) })
+            renderRows()
+          }
+          const valueNode = valueControl(condition.type, condition.value, function onChange(next) {
+            setCondition(filter.id, index, { type: condition.type, value: next })
+          })
+          const removeBtn = button('×', 'ghost', { padding: '0 6px', height: 24, color: V2.faint })
+          removeBtn.title = '删除该条件'
+          removeBtn.onclick = function onRemove() { removeCondition(filter.id, index) }
+          line.appendChild(typeSelect)
+          line.appendChild(valueNode)
+          line.appendChild(removeBtn)
+          condBox.appendChild(line)
+        })
+        const addBtn = button('＋ 添加条件')
+        addBtn.onclick = function onAdd() { addCondition(filter.id) }
+        condBox.appendChild(addBtn)
+        card.appendChild(condBox)
+        listBox.appendChild(card)
+      })
+    }
+
+    /* 新建区的条件草稿 */
+    let draftConditions = []
+    function renderDraft() {
+      while (draftBox.firstChild) draftBox.removeChild(draftBox.firstChild)
+      draftConditions.forEach(function renderDraftCondition(condition, index) {
+        const chip = document.createElement('span')
+        chip.textContent = conditionLabel(condition) + '  ×'
+        Object.assign(chip.style, {
+          fontSize: v2fs(11), color: V2_T.text.secondary, background: V2_T.surface.panel3,
+          border: '1px solid ' + V2_T.border.subtle, borderRadius: '999px', padding: '2px 8px', cursor: 'pointer',
+        })
+        chip.title = '点击移除该条件'
+        chip.onclick = function onRemove() {
+          draftConditions = draftConditions.filter(function keep(_, i) { return i !== index })
+          renderDraft()
+        }
+        draftBox.appendChild(chip)
+      })
+    }
+    function currentCondition() {
+      return { type: newType.value, value: newType.value === 'due7' ? '' : newValue }
+    }
+    function addDraftCondition() {
+      const condition = currentCondition()
+      if (condition.type !== 'due7' && !condition.value) { runtime.toast('error', '请先填写条件值'); return }
+      draftConditions.push(condition)
+      renderDraft()
+    }
+    function createFilter() {
+      const name = String(newName.value || '').trim()
+      if (!name) { runtime.toast('error', '请填写过滤器名称'); newName.focus(); return }
+      const conditions = draftConditions.length ? draftConditions.slice() : [currentCondition()]
+      if (conditions.some(function some(condition) { return condition.type !== 'due7' && !condition.value })) {
+        runtime.toast('error', '请先填写条件值')
+        return
+      }
+      const raw = workingFilters.slice()
+      raw.push({ id: 'flt_' + Date.now().toString(36), name: name, conditions: conditions })
+      saveFilterDefs(raw)
+      newName.value = ''
+      draftConditions = []
+      renderDraft()
+      renderRows(raw)
+    }
+    newType.onchange = function onTypeChange() {
+      if (newValueNode.parentNode) createLine.removeChild(newValueNode)
+      newValue = defaultValueOf(newType.value)
+      newValueNode = valueControl(newType.value, newValue, function onChange(next) { newValue = next })
+      createLine.insertBefore(newValueNode, addCondBtn)
+    }
+    addCondBtn.onclick = addDraftCondition
+    createBtn.onclick = createFilter
+    newName.onkeydown = function onKeyDown(event) {
+      if (event.key === 'Enter') { event.preventDefault(); createFilter() }
+    }
+    renderDraft()
+    renderRows()
+    setTimeout(function focusName() {
+      if (editId) {
+        const inputs = listBox.querySelectorAll('input')
+        if (inputs.length) inputs[0].focus()
       } else {
         newName.focus()
       }
@@ -4607,17 +4925,27 @@ function v2WriteTaskPanes(panes) {
 
 /* ═════════ 过滤器（本地自定义，持久化） ═════════ */
 
-function v2SanitizeFilterDef(raw) {
+function v2SanitizeFilterCondition(raw) {
   if (!raw || typeof raw !== 'object') return null
-  const id = typeof raw.id === 'string' && raw.id ? raw.id : null
-  const name = typeof raw.name === 'string' ? raw.name.trim() : ''
   const type = V2_FILTER_TYPES.some(function some(item) { return item.id === raw.type }) ? raw.type : 'keyword'
   let value = typeof raw.value === 'string' ? raw.value.trim() : ''
   if (type === 'priority' && ['high', 'medium', 'low'].indexOf(value) < 0) value = 'high'
   if (type === 'due7') value = ''
-  if (!id || !name) return null
   if (type !== 'due7' && !value) return null
-  return { id: id, name: name, type: type, value: value }
+  return { type: type, value: value }
+}
+
+function v2SanitizeFilterDef(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : null
+  const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+  if (!id || !name) return null
+  /* 兼容旧格式（单条件 type/value）与新格式（conditions 数组） */
+  let rawConditions = Array.isArray(raw.conditions) ? raw.conditions : []
+  if (!rawConditions.length && raw.type) rawConditions = [{ type: raw.type, value: raw.value }]
+  const conditions = rawConditions.map(v2SanitizeFilterCondition).filter(Boolean)
+  if (!conditions.length) return null
+  return { id: id, name: name, conditions: conditions }
 }
 
 function v2ReadFilterDefs() {
@@ -4643,21 +4971,29 @@ function v2WriteFilterDefs(list) {
   }
 }
 
-function v2MatchFilterDef(task, filter) {
-  if (!filter) return false
-  if (filter.type === 'priority') return String(task.priority || 'none') === filter.value
-  if (filter.type === 'keyword') {
-    const needle = String(filter.value || '')
+function v2MatchFilterCondition(task, condition) {
+  if (!condition) return false
+  if (condition.type === 'priority') return String(task.priority || 'none') === condition.value
+  if (condition.type === 'keyword') {
+    const needle = String(condition.value || '')
     if (!needle) return false
     return (String(task.title || '') + '\n' + String(task.notes || '')).indexOf(needle) >= 0
   }
-  if (filter.type === 'tag') {
-    return (task.tags || []).some(function some(tag) { return tag && tag.id === filter.value })
+  if (condition.type === 'tag') {
+    return (task.tags || []).some(function some(tag) { return tag && tag.id === condition.value })
   }
-  if (filter.type === 'due7') {
+  if (condition.type === 'due7') {
     const dateKey = v2TaskDateKey(task)
     const today = todayIso()
     return !!dateKey && dateKey >= today && dateKey <= addDaysKey(today, 7)
   }
   return true
+}
+
+function v2MatchFilterDef(task, filter) {
+  if (!filter) return false
+  const conditions = Array.isArray(filter.conditions) ? filter.conditions : []
+  if (!conditions.length) return false
+  /* 多条件 = AND：全部条件都命中才显示 */
+  return conditions.every(function every(condition) { return v2MatchFilterCondition(task, condition) })
 }
