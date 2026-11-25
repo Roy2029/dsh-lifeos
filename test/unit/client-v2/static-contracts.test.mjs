@@ -172,3 +172,21 @@ test('client-v2：任务名 inline 光标/详情标题保存/拖拽排序稳定�
   assert.match(tasks, /失败时回滚乐观更新/)
   assert.match(tasks, /await reload\(false\)/)
 })
+
+test('client-v2：过滤器支持多条件（AND）与增删改', () => {
+  const tasks = readV2('20-tasks.js')
+  /* 默认过滤器升级为 conditions 数组 */
+  assert.match(tasks, /const V2_FILTER_DEFAULTS = \[/)
+  assert.match(tasks, /conditions: \[\{ type: 'priority', value: 'high' \}\]/)
+  /* 兼容旧单条件数据并逐条校验 */
+  assert.match(tasks, /function v2SanitizeFilterCondition\(raw\)/)
+  assert.match(tasks, /rawConditions = \[\{ type: raw\.type, value: raw\.value \}\]/)
+  /* 匹配语义为 AND */
+  assert.match(tasks, /conditions\.every\(/)
+  /* 编辑器可新建、增删条件、删除过滤器 */
+  assert.match(tasks, /＋ 添加条件/)
+  assert.match(tasks, /至少保留一个条件/)
+  assert.match(tasks, /多个条件同时满足（AND）/)
+  /* 编辑期间使用本地工作副本，避免 React 异步更新导致读到旧 state */
+  assert.match(tasks, /let workingFilters =/)
+})
