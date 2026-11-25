@@ -10874,7 +10874,7 @@ function V2DatePicker(props) {
   )
 }
 
-/* ---- 20-tasks.js (5199 lines) ---- */
+/* ---- 20-tasks.js (5203 lines) ---- */
 /* ═══════════════════════ M6 · V2 任务 Tab ═══════════════════════ */
 
 const V2_PRIORITY_ITEMS = [
@@ -11100,11 +11100,13 @@ function v2WriteTaskState(snapshot) {
 const V2_LIST_COMPLETED_KEY = 'lifeos.v2.listCompletedMode'
 
 const V2_LIST_COMPLETED_MODES = [
-  { id: 'done-list', label: '移入「已完成」清单' },
   { id: 'inline', label: '原位显示并划线' },
-  { id: 'group-bottom', label: '分组底部「已完成」' },
+  { id: 'group-bottom', label: '移入分组内置底「已完成」分组' },
   { id: 'hidden', label: '本清单不显示' },
 ]
+
+/* 兼容旧版四模式：done-list 与 hidden 在列表内表现一致，历史上被误选，迁移到 group-bottom */
+const V2_LIST_COMPLETED_LEGACY = { 'done-list': 'group-bottom' }
 
 const V2_LIST_COMPLETED_DEFAULT = 'group-bottom'
 
@@ -11121,7 +11123,9 @@ function v2ReadListCompletedModes() {
     const out = {}
     Object.keys(parsed).forEach(function each(listId) {
       if (!listId) return
-      if (v2IsListCompletedMode(parsed[listId])) out[listId] = parsed[listId]
+      const stored = parsed[listId]
+      const mode = V2_LIST_COMPLETED_LEGACY[stored] || stored
+      if (v2IsListCompletedMode(mode)) out[listId] = mode
     })
     return out
   } catch (error) {
@@ -16074,7 +16078,7 @@ function v2MatchFilterDef(task, filter) {
   return conditions.every(function every(condition) { return v2MatchFilterCondition(task, condition) })
 }
 
-/* ---- 30-calendar.js (4120 lines) ---- */
+/* ---- 30-calendar.js (4411 lines) ---- */
 /* ═══════════════════════ M6 · 日历 Tab（V2） ═══════════════════════ */
 /* 说明：本文件由 scripts/build-v2.mjs 内联到 client.js 的 V2-MODULES 区段，
    与 00-core.js / 10-shell.js / 20-tasks.js 共用同一 factory 作用域。
@@ -17251,7 +17255,9 @@ function CalendarTabV2(props) {
   const [dragOverDate, setDragOverDate] = useState(null)
   const [dragOverAllDay, setDragOverAllDay] = useState(null)
   const [draggingTaskId, setDraggingTaskId] = useState(null)
+  const [barHoverId, setBarHoverId] = useState(null)
   const [draft, setDraft] = useState(null)
+  const [dateDraft, setDateDraft] = useState(null)
   const [jumpOpen, setJumpOpen] = useState(false)
   const [nowMinutes, setNowMinutes] = useState(function initialNow() {
     const date = new Date()
@@ -17262,6 +17268,8 @@ function CalendarTabV2(props) {
   const dragTaskRef = useRef({ id: null, task: null })
   const activeDragCleanupRef = useRef(null)
   const draftCleanupRef = useRef(null)
+  const monthDragRef = useRef(null)
+  const suppressMonthClickRef = useRef(false)
   const inlineLockRef = useRef(false)
   const gridScrollRef = useRef(null)
   const barDragRef = useRef(null)
@@ -17565,6 +17573,30 @@ function CalendarTabV2(props) {
       await loadData(false)
       return false
     }
+  }
+
+  /* 日历内删除（含月视图拖出、任务栏悬浮按钮）：移入垃圾桶 */
+  function deleteCalendarTask(task) {
+    if (!task || !task.id) return
+    runMutation(function doDelete() {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id) + '?expectedRev=' + encodeURIComponent(task.rev || 0), {
+        method: 'DELETE',
+      })
+    }, '已移入垃圾桶：' + task.title)
+  }
+
+  /* 月视图 chip 拖拽结束：拖出日历网格 = 移入垃圾桶 */
+  function finishMonthChipDrag(event, task) {
+    const grid = document.querySelector('[data-cal2-month-grid]')
+    const x = event && typeof event.clientX === 'number' ? event.clientX : 0
+    const y = event && typeof event.clientY === 'number' ? event.clientY : 0
+    let outside = false
+    if (grid && (x || y)) {
+      const rect = grid.getBoundingClientRect()
+      outside = x < rect.left || x > rect.right || y < rect.top || y > rect.bottom
+    }
+    endHtmlDrag()
+    if (outside) deleteCalendarTask(task)
   }
 
   /* ── effect ── */
@@ -17952,26 +17984,41 @@ function CalendarTabV2(props) {
     const rect = column.getBoundingClientRect()
     const startY = event.clientY
     const anchorMin = cal2Clamp(cal2SnapMins(((startY - rect.top) / hourPx) * 60 + offsetMinutes, 15), 0, 24 * 60 - 15)
+    const anchorDay = dayKey
     let moved = false
-    let range = { startMin: anchorMin, endMin: Math.min(24 * 60, anchorMin + 15) }
-    setDraft({ day: dayKey, startMin: range.startMin, endMin: range.endMin })
+    let current = { day: dayKey, min: anchorMin }
+    function orderedRange() {
+      const a = { day: anchorDay, min: anchorMin }
+      const b = current
+      const before = a.day < b.day || (a.day === b.day && a.min <= b.min)
+      const start = before ? a : b
+      const end = before ? b : a
+      const startMin = start.min
+      const endMin = Math.min(24 * 60, Math.max(end.min, startMin + 15))
+      return { startDay: start.day, startMin: startMin, endDay: end.day, endMin: endMin }
+    }
+    setDraft(orderedRange())
     function finish() {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
       draftCleanupRef.current = null
     }
-    function toMins(clientY) {
-      return cal2Clamp(cal2SnapMins(((clientY - rect.top) / hourPx) * 60 + offsetMinutes, 15), 0, 24 * 60)
+    function dayColumnAt(clientX, clientY) {
+      if (typeof document.elementFromPoint !== 'function') return null
+      const el = document.elementFromPoint(clientX, clientY)
+      const col = el && el.closest ? el.closest('[data-cal2-day]') : null
+      return col
     }
     function onMove(moveEvent) {
       if (!moved && Math.abs(moveEvent.clientY - startY) > CAL2_DRAG_SELECT_THRESHOLD) moved = true
       if (!moved) return
-      const current = toMins(moveEvent.clientY)
-      const low = Math.min(anchorMin, current)
-      const high = Math.max(anchorMin, current)
-      range = { startMin: low, endMin: Math.max(low + CAL2_MIN_DURATION, high) }
-      setDraft({ day: dayKey, startMin: range.startMin, endMin: range.endMin })
+      const col = dayColumnAt(moveEvent.clientX, moveEvent.clientY)
+      const targetDay = col ? col.getAttribute('data-cal2-day') : current.day
+      const targetRect = col ? col.getBoundingClientRect() : rect
+      const mins = cal2Clamp(cal2SnapMins(((moveEvent.clientY - targetRect.top) / hourPx) * 60 + offsetMinutes, 15), 0, 24 * 60)
+      current = { day: targetDay || dayKey, min: mins }
+      setDraft(orderedRange())
     }
     function onUp(upEvent) {
       finish()
@@ -17979,12 +18026,19 @@ function CalendarTabV2(props) {
         setDraft(null)
         return
       }
+      const range = orderedRange()
       if (moved && range.endMin - range.startMin >= CAL2_MIN_DURATION) {
         /* 拖选：保留高亮覆盖层，在选区旁弹出气泡输入框 */
-        const startMin = cal2Clamp(cal2SnapMins(range.startMin, 15), 0, 24 * 60 - CAL2_MIN_DURATION)
-        const endMin = cal2Clamp(cal2SnapMins(range.endMin, 15), startMin + CAL2_MIN_DURATION, 24 * 60)
-        setDraft({ day: dayKey, startMin: startMin, endMin: endMin })
-        beginInline({ kind: 'slot', day: dayKey, startMin: startMin, endMin: endMin, value: '' })
+        setDraft(range)
+        beginInline({
+          kind: 'slot',
+          day: range.startDay,
+          startDay: range.startDay,
+          startMin: range.startMin,
+          endDay: range.endDay,
+          endMin: range.endMin,
+          value: '',
+        })
         return
       }
       /* 未达到拖动阈值：维持原有单击快速创建（30 分钟吸附 + 默认 60 分钟） */
@@ -18093,6 +18147,7 @@ function CalendarTabV2(props) {
     if (inlineLockRef.current) return
     inlineLockRef.current = true
     if (inline && inline.kind === 'slot') setDraft(null)
+    if (inline && inline.kind === 'range') setDateDraft(null)
     setInline(null)
   }
 
@@ -18104,6 +18159,7 @@ function CalendarTabV2(props) {
     const title = String(current.value || '').trim()
     setInline(null)
     if (current.kind === 'slot') setDraft(null)
+    if (current.kind === 'range') setDateDraft(null)
     if (!title) return
     if (current.kind === 'date') {
       runMutation(function createDateTask() {
@@ -18114,13 +18170,38 @@ function CalendarTabV2(props) {
       }, '已创建：' + title)
       return
     }
+    if (current.kind === 'range') {
+      if (!current.startDay || current.startDay === current.endDay) {
+        runMutation(function createRangeDateTask() {
+          return apiRequest('/tasks', {
+            method: 'POST',
+            body: JSON.stringify({ title: title, scheduledDate: current.startDay || current.day, isAllDay: true }),
+          })
+        }, '已创建：' + title)
+        return
+      }
+      runMutation(function createRangeSpanTask() {
+        return apiRequest('/tasks', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: title,
+            scheduledStartAt: cal2LocalIso(current.startDay, 0),
+            scheduledEndAt: cal2LocalIso(current.endDay, 24 * 60),
+            isAllDay: false,
+          }),
+        })
+      }, '已创建：' + title + '（' + current.startDay + ' → ' + current.endDay + '）')
+      return
+    }
+    const startDay = current.startDay || current.day
+    const endDay = current.endDay || current.day
     runMutation(function createTimedTask() {
       return apiRequest('/tasks', {
         method: 'POST',
         body: JSON.stringify({
           title: title,
-          scheduledStartAt: cal2LocalIso(current.day, current.startMin),
-          scheduledEndAt: cal2LocalIso(current.day, current.endMin),
+          scheduledStartAt: cal2LocalIso(startDay, current.startMin),
+          scheduledEndAt: cal2LocalIso(endDay, current.endMin),
           isAllDay: false,
         }),
       })
@@ -18441,11 +18522,14 @@ function CalendarTabV2(props) {
       {
         key: task.id,
         draggable: true,
+        'data-cal2-event': '1',
         'data-cal2-segment': segment,
         onDragStart: function onDragStart(event) {
           startHtmlDrag(event, task)
         },
-        onDragEnd: endHtmlDrag,
+        onDragEnd: function onDragEnd(event) {
+          finishMonthChipDrag(event, task)
+        },
         onClick: function openCard(event) {
           event.stopPropagation()
           openEdit(task)
@@ -18565,6 +18649,140 @@ function CalendarTabV2(props) {
     })
   }
 
+  function beginMonthDateDraft(event, day) {
+    if (event.button !== undefined && event.button !== 0) return
+    const target = event.target
+    if (target && target.closest) {
+      if (target.closest('[data-cal2-event]') || target.closest('input') || target.closest('[data-cal2-inline]')) return
+    }
+    if (inline && inline.kind === 'range') {
+      cancelInline()
+      setDateDraft(null)
+      return
+    }
+    const startX = event.clientX
+    const startY = event.clientY
+    let moved = false
+    let current = day
+    setDateDraft(null)
+    function finish() {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      monthDragRef.current = null
+    }
+    function dayAt(clientX, clientY) {
+      if (typeof document.elementFromPoint !== 'function') return null
+      const el = document.elementFromPoint(clientX, clientY)
+      const cell = el && el.closest ? el.closest('[data-cal2-date]') : null
+      return cell ? cell.getAttribute('data-cal2-date') : null
+    }
+    function onMove(moveEvent) {
+      if (!moved && (Math.abs(moveEvent.clientX - startX) > 4 || Math.abs(moveEvent.clientY - startY) > 4)) moved = true
+      if (!moved) return
+      const targetDay = dayAt(moveEvent.clientX, moveEvent.clientY)
+      if (!targetDay) return
+      current = targetDay
+      const startDay = day < current ? day : current
+      const endDay = day < current ? current : day
+      setDateDraft({ startDay: startDay, endDay: endDay })
+    }
+    function onUp(upEvent) {
+      finish()
+      if (upEvent && upEvent.type === 'pointercancel') {
+        setDateDraft(null)
+        return
+      }
+      if (moved) {
+        suppressMonthClickRef.current = true
+        const startDay = day < current ? day : current
+        const endDay = day < current ? current : day
+        if (startDay === endDay && inline) setInline(null)
+        setDateDraft({ startDay: startDay, endDay: endDay })
+        beginInline({ kind: 'range', day: startDay, startDay: startDay, endDay: endDay, value: '' })
+        return
+      }
+      setDateDraft(null)
+    }
+    monthDragRef.current = { start: day }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  }
+
+  function renderMonthRangeBubble() {
+    const startDay = inline.startDay
+    const endDay = inline.endDay
+    const days = endDay > startDay ? Math.round((cal2Date(endDay) - cal2Date(startDay)) / 86400000) + 1 : 1
+    const label = startDay === endDay ? startDay.slice(5) : startDay.slice(5) + ' → ' + endDay.slice(5) + '（' + days + ' 天）'
+    return h(
+      'div',
+      {
+        key: 'range-bubble',
+        'data-cal2-inline': 'range',
+        onPointerDown: function stopPointer(event) {
+          event.stopPropagation()
+        },
+        onClick: function stopClick(event) {
+          event.stopPropagation()
+        },
+        style: {
+          position: 'relative',
+          marginTop: 4,
+          padding: 5,
+          background: V2_T.surface.panel,
+          border: '1px solid ' + V2_T.accent.line,
+          borderRadius: V2_T.radius.sm,
+          boxShadow: V2_T.shadow.pop,
+          boxSizing: 'border-box',
+        },
+      },
+      [
+        h('div', { key: 'label', style: { fontSize: v2fs(10), color: V2_T.text.tertiary, marginBottom: 3 } }, label + ' · Enter 保存'),
+        h('input', {
+          key: 'input',
+          autoFocus: true,
+          value: inline.value,
+          placeholder: '新任务，Enter 保存',
+          onChange: function onChange(event) {
+            const value = event.currentTarget.value
+            setInline(function merge(prev) {
+              return prev ? Object.assign({}, prev, { value: value }) : prev
+            })
+          },
+          onClick: function stopClick(event) {
+            event.stopPropagation()
+          },
+          onKeyDown: function onKeyDown(event) {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              commitInline()
+            } else if (event.key === 'Escape') {
+              event.preventDefault()
+              cancelInline()
+            }
+          },
+          onBlur: function onBlur() {
+            commitInline()
+          },
+          style: {
+            width: '100%',
+            boxSizing: 'border-box',
+            height: 24,
+            background: V2_T.surface.input,
+            border: '1px dashed ' + V2_T.accent.line,
+            borderRadius: 6,
+            color: V2_T.text.primary,
+            fontSize: v2fs(V2_T.font.caption),
+            padding: '0 6px',
+            outline: 'none',
+            fontFamily: COLORS.fontFamily,
+          },
+        }),
+      ],
+    )
+  }
+
   function renderMonthCell(day, index) {
     const date = cal2Date(day)
     const otherMonth = day.slice(0, 7) !== anchor.slice(0, 7)
@@ -18577,11 +18795,21 @@ function CalendarTabV2(props) {
     const visible = expanded ? entries : entries.slice(0, 3)
     const hidden = Math.max(0, entries.length - 3)
     const hasInline = !!inline && inline.kind === 'date' && inline.day === day
+    const hasRangeBubble = !!inline && inline.kind === 'range' && inline.day === day
+    const inDateRange = !!dateDraft && day >= dateDraft.startDay && day <= dateDraft.endDay
     return h(
       'div',
       {
         key: day,
+        'data-cal2-date': day,
+        onPointerDown: function pointerDown(event) {
+          beginMonthDateDraft(event, day)
+        },
         onClick: function blankClick() {
+          if (suppressMonthClickRef.current) {
+            suppressMonthClickRef.current = false
+            return
+          }
           beginInline({ kind: 'date', day: day, value: '' })
         },
         onDragOver: function onDragOver(event) {
@@ -18604,13 +18832,15 @@ function CalendarTabV2(props) {
           padding: '5px 6px',
           borderRight: lastCol ? 'none' : '1px solid ' + V2_T.border.subtle,
           borderBottom: lastRow ? 'none' : '1px solid ' + V2_T.border.subtle,
-          background: isDragOver
+          background: inDateRange
             ? V2_T.accent.soft
-            : otherMonth
-              ? 'rgba(129, 144, 168, 0.045)'
-              : isToday
-                ? 'rgba(110, 168, 254, 0.05)'
-                : 'transparent',
+            : isDragOver
+              ? V2_T.accent.soft
+              : otherMonth
+                ? 'rgba(129, 144, 168, 0.045)'
+                : isToday
+                  ? 'rgba(110, 168, 254, 0.05)'
+                  : 'transparent',
           boxShadow: isDragOver ? 'inset 0 0 0 1px ' + V2_T.accent.line : 'none',
           cursor: 'pointer',
           boxSizing: 'border-box',
@@ -18697,6 +18927,7 @@ function CalendarTabV2(props) {
             )
           : null,
         hasInline ? renderInlineInput() : null,
+        hasRangeBubble ? renderMonthRangeBubble() : null,
       ],
     )
   }
@@ -18763,6 +18994,7 @@ function CalendarTabV2(props) {
           h(
             'div',
             {
+              'data-cal2-month-grid': '1',
               style: {
                 display: 'grid',
                 gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
@@ -18811,29 +19043,47 @@ function CalendarTabV2(props) {
     )
   }
 
-  function renderDraft() {
-    const top = Math.max(0, ((draft.startMin - offsetMinutes) * hourPx) / 60)
-    const height = Math.max(10, ((draft.endMin - draft.startMin) * hourPx) / 60)
-    return h('div', {
-      key: 'draft',
-      style: {
-        position: 'absolute',
-        left: 2,
-        right: 2,
-        top: top,
-        height: height,
-        borderRadius: V2_T.radius.sm,
-        background: V2_T.status.successSoft,
-        border: '1px dashed rgba(98, 223, 174, 0.6)',
-        zIndex: 4,
-        pointerEvents: 'none',
-        padding: '3px 6px',
-        fontSize: v2fs(10),
-        color: V2_T.status.success,
-        boxSizing: 'border-box',
-        overflow: 'hidden',
+  function draftHasDay(day) {
+    if (!draft) return false
+    return draft.startDay <= day && day <= draft.endDay
+  }
+
+  function renderDraft(day) {
+    const isStart = day === draft.startDay
+    const isEnd = day === draft.endDay
+    const segStart = isStart ? draft.startMin : 0
+    const segEnd = isEnd ? draft.endMin : 24 * 60
+    const top = Math.max(0, ((segStart - offsetMinutes) * hourPx) / 60)
+    const height = Math.max(10, ((segEnd - segStart) * hourPx) / 60)
+    const label = isStart
+      ? cal2MinToHm(draft.startMin) + ' – ' + (isEnd ? cal2MinToHm(draft.endMin) : '次日')
+      : isEnd
+        ? '– ' + cal2MinToHm(draft.endMin)
+        : '全天'
+    return h(
+      'div',
+      {
+        key: 'draft',
+        style: {
+          position: 'absolute',
+          left: 2,
+          right: 2,
+          top: top,
+          height: height,
+          borderRadius: V2_T.radius.sm,
+          background: V2_T.status.successSoft,
+          border: '1px dashed rgba(98, 223, 174, 0.6)',
+          zIndex: 4,
+          pointerEvents: 'none',
+          padding: '3px 6px',
+          fontSize: v2fs(10),
+          color: V2_T.status.success,
+          boxSizing: 'border-box',
+          overflow: 'hidden',
+        },
       },
-    }, cal2MinToHm(draft.startMin) + ' – ' + cal2MinToHm(draft.endMin))
+      label,
+    )
   }
 
   function renderInlineTimeInput() {
@@ -18934,7 +19184,15 @@ function CalendarTabV2(props) {
               whiteSpace: 'nowrap',
             },
           },
-          cal2MinToHm(inline.startMin) + ' – ' + cal2MinToHm(inline.endMin),
+          inline.startDay && inline.endDay && inline.startDay !== inline.endDay
+            ? inline.startDay.slice(5) +
+              ' ' +
+              cal2MinToHm(inline.startMin) +
+              ' → ' +
+              inline.endDay.slice(5) +
+              ' ' +
+              cal2MinToHm(inline.endMin)
+            : cal2MinToHm(inline.startMin) + ' – ' + cal2MinToHm(inline.endMin),
         ),
         h('input', {
           key: 'input',
@@ -19193,7 +19451,7 @@ function CalendarTabV2(props) {
         ),
       )
     })
-    if (draft && draft.day === day) children.push(renderDraft())
+    if (draftHasDay(day)) children.push(renderDraft(day))
     if (isDropOver) children.push(renderGhost(dropPreview, 'drop-ghost', day))
     if (dragPreview && dragPreview.day === day) {
       children.push(
@@ -19257,7 +19515,9 @@ function CalendarTabV2(props) {
         onDragStart: function onDragStart(event) {
           startHtmlDrag(event, task)
         },
-        onDragEnd: endHtmlDrag,
+        onDragEnd: function onDragEnd(event) {
+          finishMonthChipDrag(event, task)
+        },
         onClick: function openCard(event) {
           event.stopPropagation()
           openEdit(task)
@@ -19834,8 +20094,14 @@ function CalendarTabV2(props) {
                     opacity: draggingTaskId === task.id ? 0.4 : 1,
                     boxSizing: 'border-box',
                   },
-                  onMouseEnter: cal2HoverIn(V2_T.surface.panel2),
-                  onMouseLeave: cal2HoverOut('transparent'),
+                  onMouseEnter: function hoverIn(event) {
+                    setBarHoverId(task.id)
+                    cal2HoverIn(V2_T.surface.panel2)(event)
+                  },
+                  onMouseLeave: function hoverOut(event) {
+                    setBarHoverId(null)
+                    cal2HoverOut('transparent')(event)
+                  },
                 },
                 [
                   h('span', {
@@ -19865,6 +20131,35 @@ function CalendarTabV2(props) {
                     },
                     barDateText(task),
                   ),
+                  barHoverId === task.id
+                    ? h(
+                        'button',
+                        {
+                          key: 'del',
+                          type: 'button',
+                          title: '移入垃圾桶',
+                          onClick: function onDelete(event) {
+                            event.stopPropagation()
+                            deleteCalendarTask(task)
+                          },
+                          style: {
+                            width: 22,
+                            height: 22,
+                            flex: '0 0 auto',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            border: '1px solid ' + V2_T.border.subtle,
+                            borderRadius: 6,
+                            background: 'transparent',
+                            color: V2_T.status.danger,
+                            cursor: 'pointer',
+                            padding: 0,
+                          },
+                        },
+                        h(V2Icon, { name: 'trash', size: 13 }),
+                      )
+                    : null,
                 ],
               )
             }),
