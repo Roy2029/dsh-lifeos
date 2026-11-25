@@ -10617,7 +10617,7 @@ function V2HostCaptureDialog(props) {
   )
 }
 
-/* ---- 20-tasks.js (4074 lines) ---- */
+/* ---- 20-tasks.js (4664 lines) ---- */
 /* ═══════════════════════ M6 · V2 任务 Tab ═══════════════════════ */
 
 const V2_PRIORITY_ITEMS = [
@@ -10636,6 +10636,37 @@ const V2_PANE_LIST_COLLAPSED = 22
 const V2_PANE_DETAIL_MIN = 320
 const V2_PANE_DETAIL_MAX = 640
 const V2_PANE_DETAIL_DEFAULT = 420
+/* #14：中间任务列表栏宽度（详情关闭时也固定宽度，避免任务项被拉得过长） */
+const V2_PANE_MAIN_MIN = 420
+const V2_PANE_MAIN_MAX = 1000
+const V2_PANE_MAIN_DEFAULT = 660
+
+/* 过滤器：用户自定义，本地持久化（name + 规则类型 + 值） */
+const V2_FILTERS_KEY = 'lifeos.v2.filters'
+const V2_FILTER_TYPES = [
+  { id: 'priority', label: '优先级' },
+  { id: 'keyword', label: '关键词' },
+  { id: 'tag', label: '标签' },
+  { id: 'due7', label: '本周到期' },
+]
+const V2_FILTER_DEFAULTS = [
+  { id: 'high', name: '本周高优先级', type: 'priority', value: 'high' },
+  { id: 'meeting', name: '会议相关', type: 'keyword', value: '会' },
+]
+
+/* 任务列表滚动区：始终显示可拖动滚动条，避免长列表时看不到位置 */
+if (typeof document !== 'undefined' && !document.getElementById('lifeos-v2-task-scrollbar-style')) {
+  const scrollbarStyle = document.createElement('style')
+  scrollbarStyle.id = 'lifeos-v2-task-scrollbar-style'
+  scrollbarStyle.textContent = [
+    '.lifeos-task-scroll{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,0.55) transparent;scrollbar-gutter:stable;}',
+    '.lifeos-task-scroll::-webkit-scrollbar{width:10px;}',
+    '.lifeos-task-scroll::-webkit-scrollbar-track{background:transparent;}',
+    '.lifeos-task-scroll::-webkit-scrollbar-thumb{background:rgba(148,163,184,0.45);border-radius:6px;border:2px solid transparent;background-clip:padding-box;}',
+    '.lifeos-task-scroll::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,0.7);border:2px solid transparent;background-clip:padding-box;}',
+  ].join('')
+  document.head.appendChild(scrollbarStyle)
+}
 
 /* 重复规则（repeatRule）展示与推算 */
 const V2_WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
@@ -11231,6 +11262,7 @@ function TaskTabV2(props) {
       trash: [],
       lists: [],
       groups: [],
+      filters: v2ReadFilterDefs(),
       scope: saved.scope || { kind: 'today' },
       view: prefs.taskView === 'board' ? 'board' : 'list',
       sort: prefs.taskSort || 'custom',
@@ -11605,7 +11637,7 @@ function TaskTabV2(props) {
         return (task.tags || []).some(function has(tag) { return tag.id === scope.id })
       })
     }
-    return state.tasks.filter(function filter(task) { return v2ScopeMatch(task, scope, state.lists, state.groups) })
+    return state.tasks.filter(function filter(task) { return v2ScopeMatch(task, scope, state.lists, state.groups, state.filters) })
   }
 
   function scopeTitleOf(scope) {
@@ -11775,12 +11807,10 @@ function TaskTabV2(props) {
     })
   }
 
-  function openBatchMoveMenu() {
-    const items = [{ label: '收集箱', icon: 'inbox', onClick: function onClick() { batchMoveToList(null) } }]
-    state.lists.forEach(function each(list) {
-      items.push({ label: list.name, icon: 'layers', onClick: function onClick() { batchMoveToList(list.id) } })
-    })
-    openV2PlainMenu(220, 220, items)
+  function openBatchMoveMenu(event) {
+    const tasks = selectedTasksNow()
+    if (!tasks.length) { runtime.toast('info', '请先选择任务'); return }
+    openMoveTreeMenu(event && event.currentTarget ? event.currentTarget : null, tasks)
   }
 
   function batchMoveToList(listId) {
@@ -11917,12 +11947,11 @@ function TaskTabV2(props) {
       buttons.push(h('button', { type: 'button', onClick: batchRestore, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '恢复'))
       buttons.push(h('button', { type: 'button', onClick: batchPurge, style: v2BtnStyle('ghost', Object.assign({}, ghost, { color: V2_T.status.danger })) }, '彻底删除'))
     } else {
-      buttons.push(h('button', { type: 'button', onClick: openBatchMoveMenu, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '移入清单'))
       buttons.push(h('button', {
         type: 'button',
-        onClick: function onClick(event) { openBatchGroupMenu(event) },
+        onClick: function onClick(event) { openBatchMoveMenu(event) },
         style: v2BtnStyle('soft', Object.assign({}, soft)),
-      }, '移到分组'))
+      }, '移动至'))
       buttons.push(h('button', { type: 'button', onClick: openBatchTagMenu, style: v2BtnStyle('soft', Object.assign({}, soft)) }, '添加标签'))
       buttons.push(h('button', { type: 'button', onClick: batchDelete, style: v2BtnStyle('ghost', Object.assign({}, ghost, { color: V2_T.status.danger })) }, '删除'))
     }
@@ -11975,7 +12004,7 @@ function TaskTabV2(props) {
     }
   }
 
-  function openDetailTagMenu(task) {
+  function openDetailTagMenu(task, event) {
     const assigned = taskTagIds(task)
     const items = state.tags.map(function map(tag) {
       return {
@@ -11990,7 +12019,8 @@ function TaskTabV2(props) {
       icon: 'plus',
       onClick: function onClick() { update({ detailTagOpen: true, detailTagText: '' }) },
     })
-    openV2PlainMenu(200, 240, items)
+    const rect = event && event.currentTarget ? event.currentTarget.getBoundingClientRect() : null
+    openV2PlainMenu(rect ? Math.round(rect.left) : 200, rect ? Math.round(rect.bottom + 4) : 240, items)
   }
 
   function deleteTask(task) {
@@ -12106,10 +12136,10 @@ function TaskTabV2(props) {
     const rect = event && event.currentTarget ? event.currentTarget.getBoundingClientRect() : null
     const items = [
       { label: '设置日期', icon: 'calendar', onClick: function onDate() { runtime.toast('success', '请在详情面板设置日期'); openDetail(task) } },
-      { label: '设置优先级', icon: 'flag', onClick: function onPriority() { openPriorityMenu(task) } },
+      { label: '设置优先级', icon: 'flag', onClick: function onPriority() { openPriorityMenu(task, rect) } },
       { label: '添加子任务', icon: 'subtask', onClick: function onSubtask() { addSubtask(task) } },
       { type: 'separator' },
-      { label: '移动到清单', icon: 'move', onClick: function onMove() { openMoveMenu(task) } },
+      { label: '移动至…', icon: 'move', onClick: function onMove() { openMoveMenu(task, rect) } },
       { label: '创建副本', icon: 'copy', onClick: function onCopy() { duplicateTask(task) } },
       { type: 'separator' },
       { label: '删除任务', icon: 'trash', danger: true, onClick: function onDelete() { deleteTask(task) } },
@@ -12117,7 +12147,7 @@ function TaskTabV2(props) {
     openV2PlainMenu(rect ? rect.left : 100, rect ? rect.bottom + 4 : 100, items)
   }
 
-  function openPriorityMenu(task) {
+  function openPriorityMenu(task, anchorRect) {
     const items = V2_PRIORITY_ITEMS.map(function map(item) {
       return {
         label: item.label,
@@ -12125,25 +12155,11 @@ function TaskTabV2(props) {
         onClick: function onClick() { patchTask(task.id, task.rev, { priority: item.id }, '优先级已更新') },
       }
     })
-    openV2PlainMenu(120, 120, items)
+    openV2PlainMenu(anchorRect ? Math.round(anchorRect.left) : 120, anchorRect ? Math.round(anchorRect.bottom + 4) : 120, items)
   }
 
-  function openMoveMenu(task) {
-    function moveTo(listId, label) {
-      const target = listId || null
-      const patch = { listId: target }
-      if ((v2TaskListId(task) || null) !== target) patch.groupId = null
-      patchTask(task.id, task.rev, patch, label)
-    }
-    const items = [{ label: '收集箱', icon: 'inbox', onClick: function onClick() { moveTo(null, '已移入收集箱') } }]
-    state.lists.forEach(function each(list) {
-      items.push({
-        label: list.name,
-        icon: 'layers',
-        onClick: function onClick() { moveTo(list.id, '已移入「' + list.name + '」') },
-      })
-    })
-    openV2PlainMenu(120, 140, items)
+  function openMoveMenu(task, anchorRect) {
+    openMoveTreeMenu(anchorRect ? { getBoundingClientRect: function getBoundingClientRect() { return anchorRect } } : null, [task])
   }
 
   function duplicateTask(task) {
@@ -12237,6 +12253,240 @@ function TaskTabV2(props) {
       document.addEventListener('mousedown', onOutside, true)
       document.addEventListener('keydown', onEsc, true)
     }, 0)
+  }
+
+  /* 两级菜单（清单 → 分组），用于“移动至”；子菜单按父项位置向右展开 */
+  function openV2TreeMenu(x, y, items) {
+    const wrapper = document.createElement('div')
+    wrapper.style.position = 'fixed'
+    wrapper.style.left = Math.max(8, Math.min(x, window.innerWidth - 210)) + 'px'
+    wrapper.style.top = Math.max(8, Math.min(y, window.innerHeight - 260)) + 'px'
+    wrapper.style.zIndex = '99999'
+    wrapper.style.background = V2_T.surface.panel2
+    wrapper.style.border = '1px solid ' + V2_T.border.subtle
+    wrapper.style.borderRadius = V2_T.radius.md + 'px'
+    wrapper.style.padding = '4px'
+    wrapper.style.minWidth = '190px'
+    wrapper.style.boxShadow = V2_T.shadow.pop
+    let closed = false
+    let submenu = null
+    let submenuFor = null
+    let submenuTimer = null
+    function closeSubmenu() {
+      if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null }
+      if (submenu && submenu.parentNode) submenu.parentNode.removeChild(submenu)
+      submenu = null
+      submenuFor = null
+    }
+    function close() {
+      if (closed) return
+      closed = true
+      closeSubmenu()
+      if (wrapper.parentNode) wrapper.parentNode.removeChild(wrapper)
+      document.removeEventListener('mousedown', onOutside, true)
+      document.removeEventListener('keydown', onEsc, true)
+    }
+    function onOutside(e) {
+      if (!wrapper.contains(e.target) && !(submenu && submenu.contains(e.target))) close()
+    }
+    function onEsc(e) {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      close()
+    }
+    function menuButton(item, onAction) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.style.display = 'flex'
+      btn.style.alignItems = 'center'
+      btn.style.gap = '8px'
+      btn.style.width = '100%'
+      btn.style.background = 'transparent'
+      btn.style.border = 'none'
+      btn.style.color = item.danger ? V2.danger : V2.text
+      btn.style.fontFamily = COLORS.fontFamily
+      btn.style.fontSize = v2fs(12)
+      btn.style.padding = '7px 10px'
+      btn.style.borderRadius = V2_T.radius.sm + 'px'
+      btn.style.cursor = 'pointer'
+      btn.style.textAlign = 'left'
+      btn.textContent = item.label
+      btn.addEventListener('mouseenter', function enter() { btn.style.background = V2_T.surface.panel3 })
+      btn.addEventListener('mouseleave', function leave() { btn.style.background = 'transparent' })
+      btn.addEventListener('click', function click(event) {
+        event.stopPropagation()
+        if (onAction) onAction()
+      })
+      return btn
+    }
+    function openSubmenu(parentItem, anchor, ownerRow) {
+      closeSubmenu()
+      const sub = document.createElement('div')
+      sub.style.position = 'fixed'
+      const anchorRect = anchor.getBoundingClientRect()
+      sub.style.left = Math.max(8, Math.min(anchorRect.right + 4, window.innerWidth - 210)) + 'px'
+      sub.style.top = Math.max(8, Math.min(anchorRect.top, window.innerHeight - 260)) + 'px'
+      sub.style.zIndex = '100000'
+      sub.style.background = V2_T.surface.panel2
+      sub.style.border = '1px solid ' + V2_T.border.subtle
+      sub.style.borderRadius = V2_T.radius.md + 'px'
+      sub.style.padding = '4px'
+      sub.style.minWidth = '170px'
+      sub.style.boxShadow = V2_T.shadow.pop
+      if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null }
+      parentItem.children.forEach(function renderChild(child) {
+        if (!child) return
+        if (child.type === 'separator') {
+          const sep = document.createElement('div')
+          sep.style.height = '1px'
+          sep.style.background = V2.line
+          sep.style.margin = '4px 6px'
+          sub.appendChild(sep)
+          return
+        }
+        sub.appendChild(menuButton(child, function act() {
+          close()
+          try { child.onClick() } catch (error) { runtime.toast('error', '操作失败：' + errorText(error)) }
+        }))
+      })
+      sub.addEventListener('mouseenter', function keepOpen() {
+        if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null }
+      })
+      sub.addEventListener('mouseleave', function scheduleClose() {
+        submenuTimer = setTimeout(function tick() {
+          if (submenu === sub) closeSubmenu()
+        }, 160)
+      })
+      document.body.appendChild(sub)
+      submenu = sub
+      submenuFor = parentItem
+      ownerRow.style.background = V2_T.surface.panel3
+    }
+    items.forEach(function render(item) {
+      if (!item) return
+      if (item.type === 'separator') {
+        const sep = document.createElement('div')
+        sep.style.height = '1px'
+        sep.style.background = V2.line
+        sep.style.margin = '4px 6px'
+        wrapper.appendChild(sep)
+        return
+      }
+      const hasChildren = item.children && item.children.length
+      const row = menuButton(item, hasChildren ? null : function act() {
+        close()
+        try { item.onClick() } catch (error) { runtime.toast('error', '操作失败：' + errorText(error)) }
+      })
+      if (hasChildren) {
+        const arrow = document.createElement('span')
+        arrow.textContent = '›'
+        arrow.style.marginLeft = 'auto'
+        arrow.style.opacity = '0.7'
+        row.appendChild(arrow)
+        row.addEventListener('mouseenter', function enter() { openSubmenu(item, row, row) })
+        row.addEventListener('mouseleave', function leave() {
+          submenuTimer = setTimeout(function tick() {
+            if (submenuFor === item) closeSubmenu()
+            row.style.background = 'transparent'
+          }, 160)
+        })
+        row.addEventListener('click', function click() {
+          if (submenuFor === item) {
+            close()
+            return
+          }
+          openSubmenu(item, row, row)
+        })
+      }
+      wrapper.appendChild(row)
+    })
+    document.body.appendChild(wrapper)
+    setTimeout(function bind() {
+      document.addEventListener('mousedown', onOutside, true)
+      document.addEventListener('keydown', onEsc, true)
+    }, 0)
+  }
+
+  /* 移动至：single 或批量共用；listId=null 表示收集箱 */
+  function moveTasksTo(tasks, listId, groupId, label) {
+    const targetList = listId || null
+    const targetGroup = groupId || null
+    if (!tasks.length) return
+    if (tasks.length === 1) {
+      const task = tasks[0]
+      patchTask(task.id, task.rev, { listId: targetList, groupId: targetGroup }, label)
+      return
+    }
+    batchRun('已移动 ' + tasks.length + ' 个任务', function worker(task) {
+      return apiRequest('/tasks/' + encodeURIComponent(task.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRev: task.rev, listId: targetList, groupId: targetGroup }),
+      })
+    })
+  }
+
+  function createGroupAndMove(tasks, listId, listName) {
+    if (!listId) return
+    const raw = window.prompt('新分组名称')
+    const name = String(raw || '').trim()
+    if (!name) return
+    runMutation(async function doCreateAndMove() {
+      const created = await apiRequest('/lists/' + encodeURIComponent(listId) + '/groups', {
+        method: 'POST',
+        body: JSON.stringify({ name: name }),
+      })
+      const groupId = created && (created.group ? created.group.id : created.id)
+      if (!groupId) throw new Error('新建分组失败')
+      for (const task of tasks) {
+        await apiRequest('/tasks/' + encodeURIComponent(task.id), {
+          method: 'PATCH',
+          body: JSON.stringify({ expectedRev: task.rev, listId: listId, groupId: groupId }),
+        })
+      }
+    }, '已移动 ' + tasks.length + ' 个任务到「' + listName + ' / ' + name + '」')
+  }
+
+  function buildMoveTreeItems(tasks) {
+    const items = [{ label: '收集箱', icon: 'inbox', onClick: function onClick() {
+      moveTasksTo(tasks, null, null, tasks.length === 1 ? '已移入收集箱' : '')
+    } }]
+    state.lists.forEach(function eachList(list) {
+      const listId = list.id
+      const groups = (state.groups || []).filter(function filterGroup(group) {
+        return (group.listId || group.list_id) === listId
+      })
+      const children = [{
+        label: '未分组',
+        icon: 'layers',
+        onClick: function onClick() {
+          moveTasksTo(tasks, listId, null, tasks.length === 1 ? '已移入「' + list.name + '」' : '')
+        },
+      }]
+      groups.forEach(function eachGroup(group) {
+        children.push({
+          label: group.name,
+          icon: 'folder',
+          onClick: function onClick() {
+            moveTasksTo(tasks, listId, group.id, tasks.length === 1 ? '已移入「' + list.name + ' / ' + group.name + '」' : '')
+          },
+        })
+      })
+      children.push({ type: 'separator' })
+      children.push({
+        label: '新建分组…',
+        icon: 'plus',
+        onClick: function onClick() { createGroupAndMove(tasks, listId, list.name) },
+      })
+      items.push({ label: list.name, icon: 'layers', children: children })
+    })
+    return items
+  }
+
+  function openMoveTreeMenu(anchor, tasks) {
+    const rect = anchor ? anchor.getBoundingClientRect() : null
+    const x = rect ? Math.round(rect.left) : 200
+    const y = rect ? Math.round(rect.bottom + 4) : 200
+    openV2TreeMenu(x, y, buildMoveTreeItems(tasks))
   }
 
   function renameList(list) {
@@ -12591,19 +12841,44 @@ function TaskTabV2(props) {
     }))
   }
 
-  /* #7：分组内连续创建——算一个排到该分组末尾的 sortOrder（0..1e9 整数） */
-  function nextGroupSortOrder(listId, groupId) {
+  /* #7：分组内连续创建——新任务排到该分组开头。
+     取桶内最小 sortOrder 再减一个间隙；若已到 0（无法再往前），先把整桶重排成
+     1024,2048,… 再插到 512；只改必要的记录，避免每次创建都全量重写。 */
+  function bucketSortedTasks(listId, groupId) {
     const targetList = listId || null
     const targetGroup = groupId || null
-    let max = 0
-    state.tasks.concat(state.done).forEach(function scan(task) {
-      if (v2TaskParentId(task)) return
-      if ((v2TaskListId(task) || null) !== targetList) return
-      if ((v2TaskGroupId(task) || null) !== targetGroup) return
-      const order = Number(task.sortOrder)
-      if (Number.isFinite(order) && order > max) max = order
+    const items = state.tasks.concat(state.done).filter(function scan(task) {
+      if (v2TaskParentId(task)) return false
+      if ((v2TaskListId(task) || null) !== targetList) return false
+      return (v2TaskGroupId(task) || null) === targetGroup
     })
-    return Math.min(TASK_SORT_MAX, max + TASK_SORT_STEP)
+    items.sort(function sort(a, b) {
+      const oa = Number(a.sortOrder)
+      const ob = Number(b.sortOrder)
+      const va = Number.isFinite(oa) ? oa : Number.MAX_SAFE_INTEGER
+      const vb = Number.isFinite(ob) ? ob : Number.MAX_SAFE_INTEGER
+      return va - vb
+    })
+    return items
+  }
+
+  async function nextGroupHeadSortOrder(listId, groupId) {
+    const items = bucketSortedTasks(listId, groupId)
+    if (!items.length) return TASK_SORT_STEP
+    const numeric = items.map(function map(task) { return Number(task.sortOrder) }).filter(function finite(n) { return Number.isFinite(n) })
+    const min = numeric.length ? Math.min.apply(null, numeric) : 0
+    const candidate = min - TASK_SORT_STEP
+    if (candidate >= 0) return candidate
+    /* 整桶重排到 1024 起，再返回 512 作为“最前” */
+    for (let index = 0; index < items.length; index++) {
+      const target = TASK_SORT_STEP * (index + 1)
+      if (Number(items[index].sortOrder) === target) continue
+      await apiRequest('/tasks/' + encodeURIComponent(items[index].id), {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRev: items[index].rev, sortOrder: target }),
+      })
+    }
+    return Math.floor(TASK_SORT_STEP / 2)
   }
 
   function submitGroupAdd() {
@@ -12614,14 +12889,23 @@ function TaskTabV2(props) {
     const groupId = target.groupId || null
     /* 先清空输入框：任务创建（含 reload）期间再按回车不会重复提交同一标题 */
     update({ groupAddText: '' })
-    /* sortOrder 让新任务落到该分组末尾；focus:false 避免 createTask 抢焦点回主快速添加框 */
-    createTask(text, { listId: listId, groupId: groupId, sortOrder: nextGroupSortOrder(listId, groupId) }, { focus: false }).then(function afterCreate(created) {
+    async function run() {
+      let order
+      try {
+        order = await nextGroupHeadSortOrder(listId, groupId)
+      } catch (error) {
+        /* 排序预处理失败不阻塞创建：退回末尾，稍后可再拖动调整 */
+        order = TASK_SORT_MAX
+      }
+      /* focus:false 避免 createTask 抢焦点回主快速添加框 */
+      const created = await createTask(text, { listId: listId, groupId: groupId, sortOrder: order }, { focus: false })
       /* 创建失败时把标题放回输入框，避免用户输入丢失 */
       if (created === false) update({ groupAddText: text })
       const el = groupAddInputRef.current
       if (el) el.focus()
       else if (inputRef.current) inputRef.current.focus()
-    })
+    }
+    run()
   }
 
   /* ═════════ 计数（与列表同谓词：顶层 + 未取消） ═════════ */
@@ -12665,14 +12949,14 @@ function TaskTabV2(props) {
     if (event.stopPropagation) event.stopPropagation()
     const startX = Number(event.clientX) || 0
     const current = panesRef.current
-    const startWidth = kind === 'list' ? current.list : current.detail
-    const min = kind === 'list' ? V2_PANE_LIST_MIN : V2_PANE_DETAIL_MIN
-    const max = kind === 'list' ? V2_PANE_LIST_MAX : V2_PANE_DETAIL_MAX
+    const startWidth = kind === 'list' ? current.list : kind === 'main' ? current.main : current.detail
+    const min = kind === 'list' ? V2_PANE_LIST_MIN : kind === 'main' ? V2_PANE_MAIN_MIN : V2_PANE_DETAIL_MIN
+    const max = kind === 'list' ? V2_PANE_LIST_MAX : kind === 'main' ? V2_PANE_MAIN_MAX : V2_PANE_DETAIL_MAX
     let next = Object.assign({}, current)
     function onMove(moveEvent) {
-      const delta = kind === 'list' ? moveEvent.clientX - startX : startX - moveEvent.clientX
+      const delta = kind === 'detail' ? startX - moveEvent.clientX : moveEvent.clientX - startX
       const width = Math.max(min, Math.min(max, Math.round(startWidth + delta)))
-      next = Object.assign({}, next, kind === 'list' ? { list: width } : { detail: width })
+      next = Object.assign({}, next, kind === 'list' ? { list: width } : kind === 'main' ? { main: width } : { detail: width })
       setPanes(next)
     }
     function onUp() {
@@ -13075,6 +13359,223 @@ function TaskTabV2(props) {
     setTimeout(function focusCreate() { nameInput.focus() }, 0)
   }
 
+  /* 过滤器管理：新建 / 编辑 / 删除（本地持久化，作用于任务标题、备注、标签与日期） */
+  function saveFilterDefs(next) {
+    const clean = v2WriteFilterDefs(next)
+    update({ filters: clean })
+    const scope = stateRef.current.scope
+    if (scope && scope.kind === 'filter') {
+      const found = clean.filter(function find(item) { return item.id === scope.id })[0]
+      if (found) update({ scope: { kind: 'filter', id: found.id, label: found.name } })
+      else selectScope({ kind: 'today' })
+    }
+  }
+
+  function openFilterEditor(editId) {
+    if (modalRef.current) return
+    modalRef.current = true
+    const mask = document.createElement('div')
+    Object.assign(mask.style, {
+      position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+      background: 'rgba(0,0,0,0.45)', zIndex: '99998', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    })
+    const panel = document.createElement('div')
+    Object.assign(panel.style, {
+      width: '520px', maxWidth: '94vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+      background: V2_T.surface.panel, border: '1px solid ' + V2_T.border.subtle,
+      borderRadius: V2_T.radius.lg + 'px', boxShadow: V2_T.shadow.pop, overflow: 'hidden',
+    })
+    let closed = false
+    function close() {
+      if (closed) return
+      closed = true
+      modalRef.current = false
+      if (mask.parentNode) mask.parentNode.removeChild(mask)
+      document.removeEventListener('keydown', onModalKey, true)
+    }
+    function onModalKey(event) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    }
+    function button(label, kind, extra) {
+      const el = document.createElement('button')
+      el.type = 'button'
+      el.textContent = label
+      Object.assign(el.style, v2BtnStyle(kind || 'ghost', Object.assign({ fontSize: v2fs(11), padding: '4px 10px', height: 28 }, extra || {})))
+      return el
+    }
+    function input(value, placeholder, width) {
+      const el = document.createElement('input')
+      el.value = value || ''
+      el.placeholder = placeholder || ''
+      Object.assign(el.style, v2InputStyle({ fontSize: v2fs(12), padding: '4px 8px', height: 28, width: width || '120px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }))
+      return el
+    }
+    function select(options, value) {
+      const el = document.createElement('select')
+      options.forEach(function each(option) {
+        const opt = document.createElement('option')
+        opt.value = option.value
+        opt.textContent = option.label
+        el.appendChild(opt)
+      })
+      el.value = value
+      Object.assign(el.style, v2InputStyle({ fontSize: v2fs(12), padding: '4px 6px', height: 28, width: '96px', background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }))
+      return el
+    }
+    function valueControl(type, value, onChange) {
+      if (type === 'priority') {
+        const el = select([{ value: 'high', label: '高' }, { value: 'medium', label: '中' }, { value: 'low', label: '低' }], value || 'high')
+        el.onchange = function onchange() { onChange(el.value) }
+        return el
+      }
+      if (type === 'tag') {
+        const options = (stateRef.current.tags || []).map(function map(tag) { return { value: tag.id, label: tag.name } })
+        if (!options.length) options.push({ value: '', label: '暂无标签' })
+        const el = select(options, value || options[0].value)
+        el.onchange = function onchange() { onChange(el.value) }
+        return el
+      }
+      if (type === 'due7') {
+        const el = document.createElement('span')
+        el.textContent = '未来 7 天内到期'
+        Object.assign(el.style, { fontSize: v2fs(11), color: V2_T.text.tertiary, padding: '0 4px' })
+        return el
+      }
+      const el = input(value, '关键词', '150px')
+      el.oninput = function oninput() { onChange(el.value) }
+      return el
+    }
+
+    const header = document.createElement('div')
+    Object.assign(header.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: '1px solid ' + V2.line })
+    const heading = document.createElement('span')
+    heading.textContent = '过滤器'
+    Object.assign(heading.style, { fontSize: v2fs(13), fontWeight: '600', color: V2_T.text.primary })
+    const closeBtn = document.createElement('button')
+    closeBtn.type = 'button'
+    closeBtn.textContent = '×'
+    closeBtn.title = '关闭'
+    Object.assign(closeBtn.style, v2IconBtnStyle({ width: '22px', height: '22px', fontSize: '15px', lineHeight: '18px' }))
+    closeBtn.onclick = close
+    header.appendChild(heading)
+    header.appendChild(closeBtn)
+
+    const createRow = document.createElement('div')
+    Object.assign(createRow.style, { display: 'flex', gap: '6px', padding: '8px 12px', borderBottom: '1px solid ' + V2.line, alignItems: 'center', flexWrap: 'wrap' })
+    const newName = input('', '过滤器名称', '130px')
+    const newType = select(V2_FILTER_TYPES.map(function map(item) { return { value: item.id, label: item.label } }), 'priority')
+    let newValue = 'high'
+    let newValueNode = valueControl('priority', 'high', function onChange(next) { newValue = next })
+    const addBtn = button('新建', 'primary')
+    createRow.appendChild(newName)
+    createRow.appendChild(newType)
+    createRow.appendChild(newValueNode)
+    createRow.appendChild(addBtn)
+
+    const listBox = document.createElement('div')
+    Object.assign(listBox.style, { flex: '1 1 auto', overflowY: 'auto', padding: '4px 8px 10px', minHeight: '80px' })
+
+    const footer = document.createElement('div')
+    Object.assign(footer.style, { padding: '6px 12px 8px', fontSize: v2fs(11), color: V2_T.text.tertiary, borderTop: '1px solid ' + V2_T.border.subtle })
+    footer.textContent = '过滤器保存在本机；可选规则：优先级、关键词、标签、本周到期。示例：关键词「会」匹配会议类任务。'
+
+    panel.appendChild(header)
+    panel.appendChild(createRow)
+    panel.appendChild(listBox)
+    panel.appendChild(footer)
+    mask.appendChild(panel)
+    mask.addEventListener('mousedown', function onMask(event) { if (event.target === mask) close() })
+    document.body.appendChild(mask)
+    document.addEventListener('keydown', onModalKey, true)
+
+    function renderRows() {
+      if (closed) return
+      while (listBox.firstChild) listBox.removeChild(listBox.firstChild)
+      const filters = (stateRef.current.filters || []).slice()
+      if (!filters.length) {
+        const empty = document.createElement('div')
+        empty.textContent = '暂无过滤器'
+        Object.assign(empty.style, { padding: '8px 6px', fontSize: v2fs(11), color: V2.faint })
+        listBox.appendChild(empty)
+        return
+      }
+      filters.forEach(function render(filter, index) {
+        const row = document.createElement('div')
+        Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 4px', borderBottom: '1px solid ' + V2.line, flexWrap: 'wrap' })
+        const nameInput = input(filter.name, '名称', '130px')
+        const typeSelect = select(V2_FILTER_TYPES.map(function map(item) { return { value: item.id, label: item.label } }), filter.type)
+        const valueNode = valueControl(filter.type, filter.value, function onChange(next) {
+          const raw = (stateRef.current.filters || []).slice()
+          raw[index] = Object.assign({}, raw[index], { value: next })
+          saveFilterDefs(raw)
+        })
+        nameInput.onchange = function onName() {
+          const raw = (stateRef.current.filters || []).slice()
+          raw[index] = Object.assign({}, raw[index], { name: String(nameInput.value || '').trim() || filter.name })
+          saveFilterDefs(raw)
+          renderRows()
+        }
+        typeSelect.onchange = function onType() {
+          const raw = (stateRef.current.filters || []).slice()
+          const nextType = typeSelect.value
+          const nextValue = nextType === 'priority' ? 'high' : nextType === 'tag' ? ((stateRef.current.tags || [])[0] || {}).id || '' : nextType === 'due7' ? '' : ''
+          raw[index] = Object.assign({}, raw[index], { type: nextType, value: nextValue })
+          saveFilterDefs(raw)
+          renderRows()
+        }
+        const deleteBtn = button('删除', 'danger')
+        deleteBtn.onclick = function onDelete() {
+          const raw = (stateRef.current.filters || []).filter(function f(item) { return item.id !== filter.id })
+          saveFilterDefs(raw)
+          renderRows()
+        }
+        row.appendChild(nameInput)
+        row.appendChild(typeSelect)
+        row.appendChild(valueNode)
+        row.appendChild(deleteBtn)
+        listBox.appendChild(row)
+      })
+    }
+
+    function createFilter() {
+      const name = String(newName.value || '').trim()
+      if (!name) { runtime.toast('error', '请填写过滤器名称'); newName.focus(); return }
+      const type = newType.value
+      let value = type === 'priority' ? newValue : newValue
+      if (type === 'tag') value = ((stateRef.current.tags || [])[0] || {}).id || ''
+      if (type === 'due7') value = ''
+      if (type !== 'due7' && !value) { runtime.toast('error', '请先创建标签或填写关键词'); return }
+      const raw = (stateRef.current.filters || []).slice()
+      raw.push({ id: 'flt_' + Date.now().toString(36), name: name, type: type, value: value })
+      saveFilterDefs(raw)
+      newName.value = ''
+      renderRows()
+    }
+
+    newType.onchange = function onTypeChange() {
+      newValueNode.parentNode && createRow.removeChild(newValueNode)
+      newValue = newType.value === 'priority' ? 'high' : newType.value === 'tag' ? ((stateRef.current.tags || [])[0] || {}).id || '' : ''
+      newValueNode = valueControl(newType.value, newValue, function onChange(next) { newValue = next })
+      createRow.insertBefore(newValueNode, addBtn)
+    }
+    addBtn.onclick = createFilter
+    newName.onkeydown = function onKeyDown(event) {
+      if (event.key === 'Enter') { event.preventDefault(); createFilter() }
+    }
+    renderRows()
+    setTimeout(function focusName() {
+      if (editId) {
+        const rows = listBox.querySelectorAll('input')
+        if (rows.length) rows[0].focus()
+      } else {
+        newName.focus()
+      }
+    }, 0)
+  }
+
   function renderLeft() {
     function navItem(scope, label, count, icon) {
       const active = state.scope.kind === scope.kind && (!scope.id || state.scope.id === scope.id)
@@ -13295,6 +13796,10 @@ function TaskTabV2(props) {
                 value: state.newListName,
                 placeholder: '清单名称',
                 onChange: function onChange(e) { update({ newListName: e.target.value }) },
+                onBlur: function onBlur() {
+                  const current = stateRef.current
+                  if (!String((current && current.newListName) || '').trim()) update({ newListOpen: false, newListName: '' })
+                },
                 onKeyDown: function onKeyDown(e) {
                   if (e.key === 'Enter') createList()
                   if (e.key === 'Escape') update({ newListOpen: false })
@@ -13402,10 +13907,28 @@ function TaskTabV2(props) {
           )
         }),
         ]),
-        sectionHeader('filters', '过滤器'),
+        sectionHeader('filters', '过滤器', h('div', { style: { display: 'flex', alignItems: 'center', gap: 2 } },
+          h('button', {
+            type: 'button',
+            title: '新建过滤器',
+            'aria-label': '新建过滤器',
+            onClick: function onClick() { openFilterEditor(null) },
+            style: v2IconBtnStyle({ width: 20, height: 20 }),
+          }, h(V2Icon, { name: 'plus', size: 12 })),
+          h('button', {
+            type: 'button',
+            title: '编辑过滤器',
+            'aria-label': '编辑过滤器',
+            onClick: function onClick() { openFilterEditor() },
+            style: v2IconBtnStyle({ width: 20, height: 20 }),
+          }, h(V2Icon, { name: 'settings', size: 12 })),
+        )),
         sectionBody('filters', [
-          navItem({ kind: 'filter', id: 'high', label: '本周高优先级' }, '本周高优先级', scopeCountOf({ kind: 'filter', id: 'high', label: '本周高优先级' }), 'filter'),
-          navItem({ kind: 'filter', id: 'meeting', label: '会议相关' }, '会议相关', scopeCountOf({ kind: 'filter', id: 'meeting', label: '会议相关' }), 'filter'),
+          state.filters.length
+            ? state.filters.map(function renderFilter(filter) {
+                return navItem({ kind: 'filter', id: filter.id, label: filter.name }, filter.name, scopeCountOf({ kind: 'filter', id: filter.id, label: filter.name }), 'filter')
+              })
+            : h('div', { style: { padding: '2px 10px', fontSize: v2fs(11), color: V2.faint } }, '暂无过滤器'),
         ]),
         sectionHeader('tags', '标签', h('button', {
           type: 'button',
@@ -13929,7 +14452,7 @@ function TaskTabV2(props) {
     const count = scopeCountOf(state.scope)
     return h(
       'div',
-      { style: { flex: '1 1 auto', minWidth: 0, maxWidth: narrow || !state.detail ? 'none' : '50%', display: 'flex', flexDirection: 'column', minHeight: 0, background: V2_T.surface.app } },
+      { style: { flex: narrow ? '1 1 auto' : '0 0 ' + panes.main + 'px', minWidth: 0, maxWidth: narrow ? 'none' : 'calc(100% - 340px)', display: 'flex', flexDirection: 'column', minHeight: 0, background: V2_T.surface.app, borderRight: narrow ? 'none' : '1px solid ' + V2_T.border.subtle } },
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px', height: V2_T.line.header, minHeight: V2_T.line.header, boxSizing: 'border-box', borderBottom: '1px solid ' + V2_T.border.subtle } },
@@ -14005,6 +14528,7 @@ function TaskTabV2(props) {
         {
           ref: listScrollRef,
           onScroll: onListScroll,
+          className: 'lifeos-task-scroll',
           style: { flex: '1 1 auto', overflowY: 'auto', minHeight: 0 },
         },
         renderTasksForScope(tasks),
@@ -14024,9 +14548,10 @@ function TaskTabV2(props) {
       {
         ref: detailRef,
         style: {
-          width: narrow ? 'auto' : panes.detail,
-          /* #14：中间列表栏被限制在总宽 50% 以内，详情栏吸收剩余宽度，避免右侧留白 */
-          flex: narrow ? '1 1 auto' : '1 1 ' + panes.detail + 'px',
+          /* 详情栏吸收列表栏之外的全部剩余宽度（列表栏默认 660px，可拖分隔条调整） */
+          width: 'auto',
+          flex: '1 1 auto',
+          minWidth: 320,
           borderLeft: narrow ? 'none' : '1px solid ' + V2_T.border.subtle,
           display: 'flex',
           flexDirection: 'column',
@@ -14356,7 +14881,7 @@ function TaskTabV2(props) {
               : h('button', {
                   type: 'button',
                   title: '添加标签',
-                  onClick: function onClick() { openDetailTagMenu(task) },
+                  onClick: function onClick(event) { openDetailTagMenu(task, event) },
                   style: v2IconBtnStyle({ width: 22, height: 22 }),
                 }, h(V2Icon, { name: 'plus', size: 11 })),
           ),
@@ -14425,21 +14950,22 @@ function TaskTabV2(props) {
     )
   }
 
-  /* 可拖拽分隔条：左侧调清单栏宽度（drag 方向向右变宽），右侧调详情栏宽度（drag 方向向左变宽） */
+  /* 可拖拽分隔条：list 调清单栏宽度；main 调中间列表栏宽度（默认宽度固定，不占满剩余空间） */
   function renderSplitter(kind) {
+    const isMain = kind === 'main'
     return h('div', {
       key: 'splitter-' + kind,
-      title: kind === 'list' ? '拖动调整清单栏宽度' : '拖动调整详情栏宽度',
+      title: kind === 'list' ? '拖动调整清单栏宽度' : isMain ? '拖动调整列表栏宽度' : '拖动调整详情栏宽度',
       onMouseDown: function onMouseDown(event) { beginPaneDrag(kind, event) },
-      onMouseEnter: function onMouseEnter(e) { e.currentTarget.style.boxShadow = 'inset 2px 0 0 ' + V2_T.accent.base },
-      onMouseLeave: function onMouseLeave(e) { e.currentTarget.style.boxShadow = 'inset 1px 0 0 ' + V2_T.border.subtle },
+      onMouseEnter: function onMouseEnter(e) { e.currentTarget.style.boxShadow = 'inset ' + (isMain ? '-2px 0 0 ' : '2px 0 0 ') + V2_T.accent.base },
+      onMouseLeave: function onMouseLeave(e) { e.currentTarget.style.boxShadow = 'inset ' + (isMain ? '-1px 0 0 ' : '1px 0 0 ') + V2_T.border.subtle },
       style: {
         width: 6,
         flex: '0 0 6px',
         cursor: 'col-resize',
         background: 'transparent',
         alignSelf: 'stretch',
-        boxShadow: 'inset 1px 0 0 ' + V2_T.border.subtle,
+        boxShadow: 'inset ' + (isMain ? '-1px 0 0 ' : '1px 0 0 ') + V2_T.border.subtle,
         transition: 'box-shadow 120ms ease',
       },
     })
@@ -14451,7 +14977,7 @@ function TaskTabV2(props) {
     renderLeft(),
     narrow || panes.listCollapsed ? null : renderSplitter('list'),
     renderMain(),
-    state.detail && !narrow ? renderSplitter('detail') : null,
+    narrow ? null : renderSplitter('main'),
     state.detail ? renderDetail() : null,
   )
 }
@@ -14498,7 +15024,7 @@ function NewGroupRow(props) {
   )
 }
 
-function v2ScopeMatch(task, scope, lists, groups) {
+function v2ScopeMatch(task, scope, lists, groups, filters) {
   const today = todayIso()
   if (!v2TaskOpen(task)) return false
   if (scope.kind === 'today') {
@@ -14515,9 +15041,14 @@ function v2ScopeMatch(task, scope, lists, groups) {
     return v2TaskListId(task) === scope.id
   }
   if (scope.kind === 'filter') {
-    if (scope.id === 'high') return task.priority === 'high'
-    if (scope.id === 'meeting') return String(task.title || '').indexOf('会') >= 0
-    return true
+    const def = (filters || []).filter(function f(item) { return item.id === scope.id })[0]
+    if (!def) {
+      /* 兼容旧 id：即使本地还没写入自定义过滤器，也保持内置两条的语义 */
+      if (scope.id === 'high') return task.priority === 'high'
+      if (scope.id === 'meeting') return String(task.title || '').indexOf('会') >= 0
+      return true
+    }
+    return v2MatchFilterDef(task, def)
   }
   return true
 }
@@ -14662,7 +15193,7 @@ function v2ClampPane(value, min, max, fallback) {
 }
 
 function v2ReadTaskPanes() {
-  const fallback = { list: V2_PANE_LIST_DEFAULT, detail: V2_PANE_DETAIL_DEFAULT, listCollapsed: false }
+  const fallback = { list: V2_PANE_LIST_DEFAULT, detail: V2_PANE_DETAIL_DEFAULT, main: V2_PANE_MAIN_DEFAULT, listCollapsed: false }
   try {
     const raw = window.localStorage.getItem(V2_PANE_STORAGE_KEY)
     if (!raw) return fallback
@@ -14670,6 +15201,7 @@ function v2ReadTaskPanes() {
     return {
       list: v2ClampPane(parsed.list, V2_PANE_LIST_MIN, V2_PANE_LIST_MAX, V2_PANE_LIST_DEFAULT),
       detail: v2ClampPane(parsed.detail, V2_PANE_DETAIL_MIN, V2_PANE_DETAIL_MAX, V2_PANE_DETAIL_DEFAULT),
+      main: v2ClampPane(parsed.main, V2_PANE_MAIN_MIN, V2_PANE_MAIN_MAX, V2_PANE_MAIN_DEFAULT),
       listCollapsed: parsed.listCollapsed === true,
     }
   } catch (error) {
@@ -14684,12 +15216,70 @@ function v2WriteTaskPanes(panes) {
       JSON.stringify({
         list: v2ClampPane(panes && panes.list, V2_PANE_LIST_MIN, V2_PANE_LIST_MAX, V2_PANE_LIST_DEFAULT),
         detail: v2ClampPane(panes && panes.detail, V2_PANE_DETAIL_MIN, V2_PANE_DETAIL_MAX, V2_PANE_DETAIL_DEFAULT),
+        main: v2ClampPane(panes && panes.main, V2_PANE_MAIN_MIN, V2_PANE_MAIN_MAX, V2_PANE_MAIN_DEFAULT),
         listCollapsed: !!(panes && panes.listCollapsed),
       }),
     )
   } catch (error) {
     /* localStorage 不可用时静默忽略 */
   }
+}
+
+/* ═════════ 过滤器（本地自定义，持久化） ═════════ */
+
+function v2SanitizeFilterDef(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : null
+  const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+  const type = V2_FILTER_TYPES.some(function some(item) { return item.id === raw.type }) ? raw.type : 'keyword'
+  let value = typeof raw.value === 'string' ? raw.value.trim() : ''
+  if (type === 'priority' && ['high', 'medium', 'low'].indexOf(value) < 0) value = 'high'
+  if (type === 'due7') value = ''
+  if (!id || !name) return null
+  if (type !== 'due7' && !value) return null
+  return { id: id, name: name, type: type, value: value }
+}
+
+function v2ReadFilterDefs() {
+  try {
+    const raw = window.localStorage.getItem(V2_FILTERS_KEY)
+    if (!raw) return V2_FILTER_DEFAULTS.slice()
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return V2_FILTER_DEFAULTS.slice()
+    const list = parsed.map(v2SanitizeFilterDef).filter(Boolean)
+    return list
+  } catch (error) {
+    return V2_FILTER_DEFAULTS.slice()
+  }
+}
+
+function v2WriteFilterDefs(list) {
+  try {
+    const clean = (Array.isArray(list) ? list : []).map(v2SanitizeFilterDef).filter(Boolean)
+    window.localStorage.setItem(V2_FILTERS_KEY, JSON.stringify(clean))
+    return clean
+  } catch (error) {
+    return []
+  }
+}
+
+function v2MatchFilterDef(task, filter) {
+  if (!filter) return false
+  if (filter.type === 'priority') return String(task.priority || 'none') === filter.value
+  if (filter.type === 'keyword') {
+    const needle = String(filter.value || '')
+    if (!needle) return false
+    return (String(task.title || '') + '\n' + String(task.notes || '')).indexOf(needle) >= 0
+  }
+  if (filter.type === 'tag') {
+    return (task.tags || []).some(function some(tag) { return tag && tag.id === filter.value })
+  }
+  if (filter.type === 'due7') {
+    const dateKey = v2TaskDateKey(task)
+    const today = todayIso()
+    return !!dateKey && dateKey >= today && dateKey <= addDaysKey(today, 7)
+  }
+  return true
 }
 
 /* ---- 30-calendar.js (3213 lines) ---- */
