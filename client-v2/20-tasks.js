@@ -215,6 +215,58 @@ function v2WriteTaskState(snapshot) {
   }
 }
 
+/* ═════════ 清单级“已完成如何显示”（#6） ═════════
+   lifeos.v2.listCompletedMode = { [listId]: mode }，按清单独立保存；
+   没有清单 id / 虚拟视图（today / next7 / inbox / 已完成 / 垃圾桶等）一律回退默认
+   group-bottom（这些视图本身不渲染清单内已完成，见 renderTasksForScope 注释）。 */
+
+const V2_LIST_COMPLETED_KEY = 'lifeos.v2.listCompletedMode'
+
+const V2_LIST_COMPLETED_MODES = [
+  { id: 'done-list', label: '移入「已完成」清单' },
+  { id: 'inline', label: '原位显示并划线' },
+  { id: 'group-bottom', label: '分组底部「已完成」' },
+  { id: 'hidden', label: '本清单不显示' },
+]
+
+const V2_LIST_COMPLETED_DEFAULT = 'group-bottom'
+
+function v2IsListCompletedMode(mode) {
+  return V2_LIST_COMPLETED_MODES.some(function has(item) { return item.id === mode })
+}
+
+function v2ReadListCompletedModes() {
+  try {
+    const raw = window.localStorage.getItem(V2_LIST_COMPLETED_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out = {}
+    Object.keys(parsed).forEach(function each(listId) {
+      if (!listId) return
+      if (v2IsListCompletedMode(parsed[listId])) out[listId] = parsed[listId]
+    })
+    return out
+  } catch (error) {
+    return {}
+  }
+}
+
+function v2WriteListCompletedModes(modes) {
+  try {
+    window.localStorage.setItem(V2_LIST_COMPLETED_KEY, JSON.stringify(modes || {}))
+  } catch (error) {
+    /* localStorage 不可用 / 配额不足时静默忽略：本次会话内 state 仍然生效 */
+  }
+}
+
+/* 读取某清单的已完成显示模式；无清单 id（虚拟视图）返回默认值 */
+function v2ListCompletedModeOf(modes, listId) {
+  if (!listId) return V2_LIST_COMPLETED_DEFAULT
+  const mode = modes && modes[listId]
+  return v2IsListCompletedMode(mode) ? mode : V2_LIST_COMPLETED_DEFAULT
+}
+
 /* #9：鼠标点击标题进入 inline 编辑时，按点击坐标取字符位置（键盘/按钮入口仍全选）。
    优先使用浏览器 caretPositionFromPoint / caretRangeFromPoint；
    不可用或坐标落在标题外时返回 null，调用方回退到“全选”。 */
@@ -671,6 +723,8 @@ function TaskTabV2(props) {
       renameGroupText: '',
       selectionMode: false,
       selectedIds: [],
+      /* #6：清单级“已完成如何显示”（按清单独立，localStorage 持久化） */
+      listCompletedModes: v2ReadListCompletedModes(),
     }
   })
   const [panes, setPanes] = useState(v2ReadTaskPanes)
@@ -1904,11 +1958,33 @@ function TaskTabV2(props) {
     ])
   }
 
+  /* #6：写入单个清单的“已完成显示”模式；内存 state 立即生效，localStorage 持久化 */
+  function setListCompletedMode(listId, mode) {
+    if (!listId || !v2IsListCompletedMode(mode)) return
+    const next = Object.assign({}, state.listCompletedModes)
+    next[listId] = mode
+    v2WriteListCompletedModes(next)
+    update({ listCompletedModes: next })
+  }
+
   function openListMenu(list, event) {
     const rect = event.currentTarget.getBoundingClientRect()
-    openV2PlainMenu(rect.right - 160, rect.bottom + 4, [
+    const current = v2ListCompletedModeOf(state.listCompletedModes, list.id)
+    const currentItem = V2_LIST_COMPLETED_MODES.filter(function find(item) { return item.id === current })[0]
+    openV2TreeMenu(rect.right - 160, rect.bottom + 4, [
       { label: '重命名清单', icon: 'edit', onClick: function onClick() { update({ renamingListId: list.id, renameListText: list.name }) } },
       { label: '删除清单', icon: 'trash', danger: true, onClick: function onClick() { deleteList(list) } },
+      { type: 'separator' },
+      {
+        /* 复用两级菜单做子菜单；菜单项只渲染 textContent，用“✓ ”前缀表示当前值 */
+        label: '已完成显示：' + (currentItem ? currentItem.label : '分组底部「已完成」'),
+        children: V2_LIST_COMPLETED_MODES.map(function map(item) {
+          return {
+            label: (item.id === current ? '✓ ' : '　') + item.label,
+            onClick: function onClickMode() { setListCompletedMode(list.id, item.id) },
+          }
+        }),
+      },
     ])
   }
 
@@ -2407,8 +2483,19 @@ function TaskTabV2(props) {
 
   /* ═════════ 重复属性（repeatRule）编辑 ═════════ */
 
+  /* #12：设置重复规则时，任务本来没有日期就自动补“最近一个符合规则的日期”，
+     和 repeatRule 一起 patch；已有 scheduledDate / 定时开始时间不覆盖。
+     显式清空日期走日期控件的 patchTask，不经过这里，因此不会被重新补齐。 */
   function repeatPatch(task, rule) {
-    patchTask(task.id, task.rev, { repeatRule: rule }, null)
+    const patch = { repeatRule: rule }
+    if (rule) {
+      const hadDate = !!(v2TaskDateKey(task) || task.scheduledStartAt || task.scheduled_start_at)
+      if (!hadDate) {
+        const startDate = v2RepeatStartDate(rule)
+        if (startDate) patch.scheduledDate = startDate
+      }
+    }
+    patchTask(task.id, task.rev, patch, null)
   }
 
   function setRepeatKind(task, current, kind) {
@@ -3651,6 +3738,57 @@ function TaskTabV2(props) {
     )
   }
 
+  /* #6：某清单内已完成的顶层任务（已完成任务来自独立的 view=done 查询，不在 state.tasks 里） */
+  function listCompletedTasksOf(listId, query) {
+    if (!listId) return []
+    return state.done.filter(function filter(task) {
+      return v2TaskListId(task) === listId && !v2TaskParentId(task) && v2TaskMatchesText(task, query)
+    })
+  }
+
+  /* #6 group-bottom：分组/未分组列表末尾追加可折叠的“已完成 N”分组（任务行沿用已完成划线样式） */
+  function renderCompletedSection(bucket, groupKey) {
+    if (!bucket.done || !bucket.done.length) return null
+    const doneKey = groupKey + ':done'
+    const collapsed = state.collapsed[doneKey] === true
+    const tint = V2.faint || V2_T.text.tertiary
+    return h(
+      'div',
+      { key: 'completed', style: { borderTop: '1px solid ' + V2_T.border.subtle, margin: '2px 8px 2px', paddingTop: 2 } },
+      h(
+        'button',
+        {
+          type: 'button',
+          onClick: function onClick() {
+            update({ collapsed: Object.assign({}, state.collapsed, { [doneKey]: !collapsed }) })
+          },
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            width: '100%',
+            height: 30,
+            padding: '0 4px',
+            border: 'none',
+            background: 'transparent',
+            color: tint,
+            cursor: 'pointer',
+            fontFamily: COLORS.fontFamily,
+            fontSize: v2fs(11),
+            textAlign: 'left',
+          },
+          onMouseEnter: function onEnter(e) { e.currentTarget.style.background = V2_T.surface.panel2 },
+          onMouseLeave: function onLeave(e) { e.currentTarget.style.background = 'transparent' },
+        },
+        h(V2Icon, { name: collapsed ? 'chev' : 'chevD', size: 11, color: tint }),
+        '已完成 ' + bucket.done.length,
+      ),
+      collapsed
+        ? null
+        : bucket.done.map(function renderDone(task) { return renderTaskRow(task) }),
+    )
+  }
+
   function renderTasksForScope(tasks) {
     if (state.loading) {
       return h(
@@ -3670,8 +3808,14 @@ function TaskTabV2(props) {
         if (flatScope) return true
         return !v2TaskParentId(task)
       })
-    if (!visible.length) {
-      const listScope = state.scope.kind === 'list'
+    /* #6：清单作用域按该清单自己的模式决定已完成任务的呈现；虚拟视图/看板不额外合并 */
+    const listScope = state.scope.kind === 'list'
+    const completedMode = listScope
+      ? v2ListCompletedModeOf(state.listCompletedModes, state.scope.id)
+      : V2_LIST_COMPLETED_DEFAULT
+    const showCompleted = listScope && state.view !== 'board' && (completedMode === 'inline' || completedMode === 'group-bottom')
+    const completed = showCompleted ? listCompletedTasksOf(state.scope.id, query) : []
+    if (!visible.length && !completed.length) {
       if (listScope) {
         /* 清单为空也要渲染分组列表与“新建分组”行：
            否则空清单只剩快速添加一个入口，无法在此清单建分组；
@@ -3689,29 +3833,46 @@ function TaskTabV2(props) {
         hint: state.scope.kind === 'trash' ? '删除的任务会出现在这里' : '试试在下方输入一条任务',
       })
     }
+    if (completedMode === 'inline' && completed.length) {
+      /* inline：已完成留在原分组原位置（与未完成一起排序），划线由 TaskArow 的已完成样式统一处理 */
+      return renderGroupedList(v2SortTasks(visible.concat(completed), state.sort))
+    }
     const sorted = v2SortTasks(visible, state.sort)
     if (state.view === 'board') {
       return renderBoard(sorted)
     }
-    if (state.scope.kind === 'list') {
-      return renderGroupedList(sorted)
+    if (listScope) {
+      return renderGroupedList(sorted, completed.length ? v2SortTasks(completed, state.sort) : [])
     }
     return renderDateList(sorted)
   }
 
-  function renderGroupedList(tasks) {
+  function renderGroupedList(tasks, completedTasks) {
     const listId = state.scope.id
+    /* #6：group-bottom 模式传入的已完成任务，按分组挂到各桶底部 */
+    const completed = Array.isArray(completedTasks) ? completedTasks : []
     const groups = state.groups.filter(function filter(group) { return (group.listId || group.list_id) === listId })
     const buckets = []
     groups.forEach(function each(group) {
-      buckets.push({ id: group.id, name: group.name, tasks: tasks.filter(function f(t) { return v2TaskGroupId(t) === group.id }) })
+      buckets.push({
+        id: group.id,
+        name: group.name,
+        tasks: tasks.filter(function f(t) { return v2TaskGroupId(t) === group.id }),
+        done: completed.filter(function f(t) { return v2TaskGroupId(t) === group.id }),
+      })
     })
     const ungrouped = tasks.filter(function f(t) {
       const groupId = v2TaskGroupId(t)
       return !groupId || !groups.some(function some(group) { return group.id === groupId })
     })
+    const ungroupedDone = completed.filter(function f(t) {
+      const groupId = v2TaskGroupId(t)
+      return !groupId || !groups.some(function some(group) { return group.id === groupId })
+    })
     /* 未分组桶始终命名为“未分组”（空清单也渲染），不能因还没有分组就叫“任务” */
-    if (ungrouped.length || !groups.length) buckets.push({ id: '', name: '未分组', tasks: ungrouped })
+    if (ungrouped.length || ungroupedDone.length || !groups.length) {
+      buckets.push({ id: '', name: '未分组', tasks: ungrouped, done: ungroupedDone })
+    }
     return h(
       'div',
       { style: { padding: '12px 16px 20px' } },
@@ -3878,11 +4039,14 @@ function TaskTabV2(props) {
                 },
                 bucket.tasks.length
                   ? bucket.tasks.map(function renderTask(task) { return renderTaskRow(task) })
-                  : h(
-                      'div',
-                      { style: { padding: '6px 10px 8px', fontSize: v2fs(11), color: V2_T.text.tertiary } },
-                      '暂无任务',
-                    ),
+                  : bucket.done.length
+                    ? null
+                    : h(
+                        'div',
+                        { style: { padding: '6px 10px 8px', fontSize: v2fs(11), color: V2_T.text.tertiary } },
+                        '暂无任务',
+                      ),
+                renderCompletedSection(bucket, key),
               ),
         )
       }),
@@ -4319,18 +4483,16 @@ function TaskTabV2(props) {
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' } },
-            h('input', {
-              type: 'date',
+            h(V2DatePicker, {
               value: v2TaskDateKey(task) || '',
-              onChange: function onChange(e) {
-                const value = e.target.value || null
+              title: '设置任务日期',
+              onChange: function onChange(value) {
                 patchTask(task.id, task.rev, {
-                  scheduledDate: value,
+                  scheduledDate: value || null,
                   scheduledStartAt: null,
                   scheduledEndAt: null,
                 }, null)
               },
-              style: v2InputStyle({ fontSize: v2fs(13), padding: '4px 8px', height: 28, flex: '0 0 auto', width: 132, background: V2_T.surface.input, border: '1px solid ' + V2_T.border.subtle, borderRadius: V2_T.radius.sm }),
             }),
             /* #19：快捷日期——今天 / 明天 / 下周（今天 +7 天） */
             h('button', {
@@ -4880,6 +5042,43 @@ function v2NextRepeatDate(baseDateKey, rule) {
     return String(nextYear) + '-' + String(nextMonth).padStart(2, '0') + '-' + String(safeDay).padStart(2, '0')
   }
   return addDaysKey(base, 1)
+}
+
+/* #12：返回“从现在开始执行该重复规则”时最近一个符合规则的日期。
+   daily=今天；weekly=从今天起最近的目标星期几（今天命中则今天）；
+   monthly=本月该日若未过则本月，否则下月同日（月末按当月天数截断）。 */
+function v2RepeatStartDate(rule) {
+  const today = todayIso()
+  if (!rule || !rule.kind) return null
+  if (rule.kind === 'daily') return today
+  if (rule.kind === 'weekly') {
+    const days = (rule.days || []).slice()
+    if (!days.length) return today
+    for (let step = 0; step <= 6; step += 1) {
+      const candidate = addDaysKey(today, step)
+      if (days.indexOf(v2IsoWeekday(candidate)) >= 0) return candidate
+    }
+    return today
+  }
+  if (rule.kind === 'monthly') {
+    const parts = today.split('-')
+    const year = Number(parts[0])
+    const month = Number(parts[1])
+    if (!year || !month) return today
+    const target = Math.max(1, Math.min(31, Math.round(Number(rule.day) || 1)))
+    /* 本月：该日未过（含今天）就取本月，月末按当月天数截断 */
+    const thisLast = new Date(year, month, 0).getDate()
+    const thisDay = Math.min(target, thisLast)
+    const thisKey = String(year) + '-' + String(month).padStart(2, '0') + '-' + String(thisDay).padStart(2, '0')
+    if (thisKey >= today) return thisKey
+    /* 本月已过：下月同日，同样按目标月份天数截断 */
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const nextLast = new Date(nextYear, nextMonth, 0).getDate()
+    const nextDay = Math.min(target, nextLast)
+    return String(nextYear) + '-' + String(nextMonth).padStart(2, '0') + '-' + String(nextDay).padStart(2, '0')
+  }
+  return null
 }
 
 /* ═════════ 三栏布局宽度持久化 ═════════ */

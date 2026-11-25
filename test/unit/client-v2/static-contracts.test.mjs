@@ -190,3 +190,41 @@ test('client-v2：过滤器支持多条件（AND）与增删改', () => {
   /* 编辑期间使用本地工作副本，避免 React 异步更新导致读到旧 state */
   assert.match(tasks, /let workingFilters =/)
 })
+
+test('client-v2：M16 日期选择器 / 跨日切段 / 拖选 / 已完成模式 / 自动日期', () => {
+  const dp = readV2('15-datepicker.js')
+  const tasks = readV2('20-tasks.js')
+  const calendar = readV2('30-calendar.js')
+  /* 共享日期选择器：42 格矩阵、可清空、相对日期文案 */
+  assert.match(dp, /function V2DatePicker\(props\)/)
+  assert.match(dp, /v2dpMonthMatrix/)
+  assert.match(dp, /今天/)
+  assert.match(dp, /清空/)
+  /* 任务详情日期入口改用 V2DatePicker */
+  assert.match(tasks, /h\(V2DatePicker, \{/)
+  assert.match(tasks, /title: '设置任务日期'/)
+  /* #6 清单级已完成 4 模式 */
+  assert.match(tasks, /V2_LIST_COMPLETED_KEY = 'lifeos\.v2\.listCompletedMode'/)
+  assert.match(tasks, /group-bottom/)
+  assert.match(tasks, /已完成显示/)
+  assert.match(tasks, /renderCompletedSection/)
+  /* #12 重复设置自动补最近日期 */
+  assert.match(tasks, /function repeatPatch\(task, rule\)/)
+  assert.match(tasks, /function v2RepeatStartDate\(rule\)/)
+  /* #18 日期跳转：picker 回写 anchor 且不改视图 */
+  assert.match(calendar, /function pickJumpDate\(dayKey\)/)
+  assert.match(calendar, /setAnchor\(dayKey\)/)
+  /* #30 跨日：范围解析与按天切段 */
+  assert.match(calendar, /function cal2TaskRange\(task\)/)
+  assert.match(calendar, /function cal2TaskDayKeys\(range\)/)
+  assert.match(calendar, /function cal2TaskSegment\(range, dayKey\)/)
+  assert.match(calendar, /startMin|mid|endMin/)
+  /* #31 拖选阈值与气泡输入 */
+  assert.match(calendar, /CAL2_DRAG_SELECT_THRESHOLD = 4/)
+  assert.match(calendar, /新任务，Enter 保存/)
+  assert.match(calendar, /function renderSlotBubble/)
+  /* #32 任务栏排序/分组持久化 */
+  assert.match(calendar, /barSort/)
+  assert.match(calendar, /barGroupBy/)
+  assert.match(calendar, /function buildBarGroups/)
+})
