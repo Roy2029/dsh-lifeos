@@ -60,8 +60,19 @@ const CAL2_SIDEBAR_COLLAPSED_WIDTH = 34
 const CAL2_STATE_KEY = 'lifeos.v2.calendar'
 const CAL2_MIN_DURATION = 15
 const CAL2_DEFAULT_DURATION = 60
+const CAL2_DRAG_SELECT_THRESHOLD = 4
 const CAL2_ERR_COLOR = '#ff8a8a'
 const CAL2_ACCENT = '#6ea8fe'
+const CAL2_BAR_SORT_DEFS = [
+  { id: 'date', label: '日期' },
+  { id: 'priority', label: '优先级' },
+  { id: 'created', label: '创建时间' },
+  { id: 'custom', label: '自定义' },
+]
+const CAL2_BAR_GROUP_DEFS = [
+  { id: 'list', label: '按清单' },
+  { id: 'group', label: '按分组' },
+]
 
 /* ── 基础工具 ── */
 function cal2Pad(value) {
@@ -221,6 +232,91 @@ function cal2TaskDayKey(task) {
   const startParts = cal2IsoToParts(cal2TaskStartIso(task))
   if (startParts) return startParts.dateKey
   return cal2TaskScheduledDate(task) || cal2TaskDueDate(task) || ''
+}
+
+/* 任务时间范围：统一按本地日期键描述跨天区间，避免 UTC 偏移错位 */
+function cal2TaskRange(task) {
+  const startIso = cal2TaskStartIso(task)
+  if (!startIso) return null
+  const startParts = cal2IsoToParts(startIso)
+  if (!startParts) return null
+  const allDay = task.isAllDay === true || task.is_all_day === true
+  const endIso = cal2TaskEndIso(task)
+  let endKey = startParts.dateKey
+  let endMin = 24 * 60
+  if (endIso) {
+    const endParts = cal2IsoToParts(endIso)
+    if (endParts && endParts.dateKey >= startParts.dateKey) {
+      endKey = endParts.dateKey
+      endMin = endParts.minutes
+      /* 结束在次日 00:00 视为前一天 24:00（end 为开区间） */
+      if (endMin === 0 && endParts.dateKey > startParts.dateKey) {
+        endKey = cal2AddDays(endParts.dateKey, -1)
+        endMin = 24 * 60
+      }
+    }
+  }
+  if (endIso && endKey === startParts.dateKey && endMin <= startParts.minutes) {
+    const duration = cal2DurationMinutes(startIso, endIso)
+    endMin = startParts.minutes + (duration > 0 ? duration : CAL2_DEFAULT_DURATION)
+    if (endMin > startParts.minutes + CAL2_DEFAULT_DURATION) endMin = startParts.minutes + CAL2_DEFAULT_DURATION
+    if (endMin <= startParts.minutes) endMin = startParts.minutes + CAL2_MIN_DURATION
+    if (endMin > 24 * 60) {
+      endKey = cal2AddDays(startParts.dateKey, Math.floor(endMin / (24 * 60)))
+      endMin = endMin % (24 * 60)
+      if (endMin === 0) {
+        endKey = cal2AddDays(endKey, -1)
+        endMin = 24 * 60
+      }
+    }
+  }
+  if (allDay && endKey === startParts.dateKey) {
+    endMin = 24 * 60
+  }
+  const multiDay = endKey > startParts.dateKey
+  endMin = cal2Clamp(endMin, multiDay ? CAL2_MIN_DURATION : startParts.minutes + CAL2_MIN_DURATION, 24 * 60)
+  return {
+    startKey: startParts.dateKey,
+    startMin: startParts.minutes,
+    endKey: endKey,
+    endMin: endMin,
+    allDay: allDay,
+    multiDay: multiDay,
+  }
+}
+
+function cal2TaskDayKeys(range) {
+  if (!range) return []
+  const keys = []
+  let cursor = range.startKey
+  let guard = 0
+  while (cursor <= range.endKey && guard < 400) {
+    keys.push(cursor)
+    cursor = cal2AddDays(cursor, 1)
+    guard += 1
+  }
+  return keys
+}
+
+/* 跨天任务在某天的切段：start 起点 / mid 中间延续 / end 收尾；单日任务返回 null */
+function cal2TaskSegment(range, dayKey) {
+  if (!range || !range.multiDay) return null
+  if (dayKey === range.startKey) return { segment: 'start', startMin: range.startMin, endMin: 24 * 60 }
+  if (dayKey === range.endKey) return { segment: 'end', startMin: 0, endMin: range.endMin }
+  return { segment: 'mid', startMin: 0, endMin: 24 * 60 }
+}
+
+function cal2SegmentLabel(segment) {
+  if (segment === 'start') return '开始'
+  if (segment === 'mid') return '续'
+  if (segment === 'end') return '结束'
+  return ''
+}
+
+function cal2IsoWeekday(dayKey) {
+  const date = cal2Date(dayKey)
+  const weekday = date.getDay()
+  return weekday === 0 ? 7 : weekday
 }
 
 function cal2TaskColor(task) {
@@ -457,6 +553,7 @@ function Cal2TaskModal(props) {
   const task = props.task || null
   const isNew = props.isNew === true
   const lists = Array.isArray(props.lists) ? props.lists : []
+  const tags = Array.isArray(props.tags) ? props.tags : []
 
   const [form, setForm] = useState(function initialForm() {
     const source = task || {}
@@ -469,6 +566,30 @@ function Cal2TaskModal(props) {
       cal2TaskDueDate(source) ||
       props.defaultDate ||
       todayIso()
+    const rule = source.repeatRule || source.repeat_rule || null
+    const repeatKind = rule && rule.kind ? rule.kind : 'none'
+    const repeatDays = Array.isArray(rule && rule.days)
+      ? rule.days.map(Number).filter(function validDay(value) {
+          return Number.isFinite(value) && value >= 1 && value <= 7
+        })
+      : []
+    const repeatDay = rule && Number.isFinite(Number(rule.day)) ? Number(rule.day) : cal2Date(day).getDate()
+    /* 跨天任务：保留起点到终点的天数差，避免在弹窗里保存时把跨天区间压成单日 */
+    const endDayOffset =
+      startParts && endParts
+        ? Math.max(
+            0,
+            Math.round((cal2Date(endParts.dateKey).getTime() - cal2Date(startParts.dateKey).getTime()) / 86400000),
+          )
+        : 0
+    const sourceTags = Array.isArray(source.tags) ? source.tags : []
+    const initialTagIds = Array.isArray(source.tagIds)
+      ? source.tagIds.slice()
+      : sourceTags
+          .map(function tagId(tag) {
+            return tag && tag.id
+          })
+          .filter(Boolean)
     return {
       title: source.title || '',
       day: day,
@@ -479,6 +600,12 @@ function Cal2TaskModal(props) {
       listId: cal2TaskListId(source),
       /* projectId 不在弹窗中展示，保留原值以便 PATCH 时不被清空（新建为 null） */
       projectId: source.projectId || '',
+      notes: source.notes || '',
+      tagIds: initialTagIds,
+      repeatKind: repeatKind,
+      repeatDays: repeatDays,
+      repeatDay: repeatDay,
+      endDayOffset: endDayOffset,
     }
   })
   const [saving, setSaving] = useState(false)
@@ -521,14 +648,36 @@ function Cal2TaskModal(props) {
       listId: form.listId || null,
       /* projectId 沿用原任务值（弹窗不展示该字段，保持原样） */
       projectId: form.projectId || null,
+      notes: String(form.notes || '').trim() || null,
+      tagIds: Array.isArray(form.tagIds) ? form.tagIds.slice() : [],
+    }
+    const repeatKind = form.repeatKind || 'none'
+    if (repeatKind === 'daily') payload.repeatRule = { kind: 'daily' }
+    else if (repeatKind === 'weekly') {
+      const days = (Array.isArray(form.repeatDays) ? form.repeatDays : [])
+        .map(Number)
+        .filter(function validDay(value) {
+          return Number.isFinite(value) && value >= 1 && value <= 7
+        })
+        .sort(function asc(a, b) {
+          return a - b
+        })
+      payload.repeatRule = { kind: 'weekly', days: days.length ? days : [cal2IsoWeekday(form.day)] }
+    } else if (repeatKind === 'monthly') {
+      payload.repeatRule = { kind: 'monthly', day: cal2Clamp(Number(form.repeatDay) || 1, 1, 31) }
+    } else {
+      payload.repeatRule = null
     }
     if (form.timed) {
       const startMin = cal2HmToMin(form.startHm || '09:00')
+      const endDayOffset = Math.max(0, Math.round(Number(form.endDayOffset) || 0))
       let endMin = form.endHm ? cal2HmToMin(form.endHm) : startMin + CAL2_DEFAULT_DURATION
-      if (endMin <= startMin) endMin = Math.min(24 * 60 - 1, startMin + CAL2_DEFAULT_DURATION)
+      if (endDayOffset === 0 && endMin <= startMin) {
+        endMin = Math.min(24 * 60 - 1, startMin + CAL2_DEFAULT_DURATION)
+      }
       payload.scheduledDate = null
       payload.scheduledStartAt = cal2LocalIso(form.day, startMin)
-      payload.scheduledEndAt = cal2LocalIso(form.day, endMin)
+      payload.scheduledEndAt = cal2LocalIso(cal2AddDays(form.day, endDayOffset), endMin)
       payload.isAllDay = false
     } else {
       payload.scheduledDate = form.day
@@ -558,6 +707,48 @@ function Cal2TaskModal(props) {
   const priorityOptions = CAL2_PRIORITY_OPTIONS.map(function renderPriority(option) {
     return h('option', { key: option.value, value: option.value }, option.label)
   })
+  const repeatOptions = [
+    { value: 'none', label: '不重复' },
+    { value: 'daily', label: '每天' },
+    { value: 'weekly', label: '每周' },
+    { value: 'monthly', label: '每月' },
+  ].map(function renderRepeat(option) {
+    return h('option', { key: option.value, value: option.value }, option.label)
+  })
+  const repeatDayNames = ['一', '二', '三', '四', '五', '六', '日']
+  function chipStyle(active) {
+    return {
+      height: 24,
+      padding: '0 9px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      border: '1px solid ' + (active ? V2_T.accent.line : V2_T.border.subtle),
+      background: active ? V2_T.accent.soft : V2_T.surface.panel2,
+      borderRadius: 12,
+      color: active ? V2_T.accent.base : V2_T.text.secondary,
+      fontFamily: COLORS.fontFamily,
+      fontSize: v2fs(V2_T.font.caption),
+      cursor: 'pointer',
+    }
+  }
+  function toggleWeekday(value) {
+    const current = Array.isArray(form.repeatDays) ? form.repeatDays : []
+    const next = current.indexOf(value) >= 0
+      ? current.filter(function remove(day) {
+          return day !== value
+        })
+      : current.concat([value])
+    update({ repeatDays: next })
+  }
+  function toggleTag(tagId) {
+    const current = Array.isArray(form.tagIds) ? form.tagIds : []
+    const next = current.indexOf(tagId) >= 0
+      ? current.filter(function remove(id) {
+          return id !== tagId
+        })
+      : current.concat([tagId])
+    update({ tagIds: next })
+  }
   const maskStyle = {
     position: 'fixed',
     left: 0,
@@ -763,6 +954,124 @@ function Cal2TaskModal(props) {
               ),
             ]),
           ]),
+          h('div', { key: 'repeat' }, [
+            cal2FieldLabel('重复'),
+            h(
+              'select',
+              {
+                value: form.repeatKind || 'none',
+                onChange: function onRepeat(event) {
+                  update({ repeatKind: event.currentTarget.value })
+                },
+                style: cal2FieldStyle({ cursor: 'pointer' }),
+              },
+              repeatOptions,
+            ),
+            form.repeatKind === 'weekly'
+              ? h(
+                  'div',
+                  { key: 'weekdays', style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
+                  repeatDayNames.map(function renderWeekday(label, index) {
+                    const value = index + 1
+                    const active = (Array.isArray(form.repeatDays) ? form.repeatDays : []).indexOf(value) >= 0
+                    return h(
+                      'button',
+                      {
+                        key: value,
+                        type: 'button',
+                        onClick: function pickWeekday() {
+                          toggleWeekday(value)
+                        },
+                        style: chipStyle(active),
+                      },
+                      label,
+                    )
+                  }),
+                )
+              : null,
+            form.repeatKind === 'monthly'
+              ? h(
+                  'div',
+                  {
+                    key: 'monthday',
+                    style: {
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      marginTop: 6,
+                      fontSize: v2fs(V2_T.font.meta),
+                      color: V2_T.text.secondary,
+                    },
+                  },
+                  [
+                    h('span', { key: 'label' }, '每月'),
+                    h(
+                      'select',
+                      {
+                        key: 'day',
+                        value: String(form.repeatDay || 1),
+                        onChange: function onMonthDay(event) {
+                          update({ repeatDay: Number(event.currentTarget.value) })
+                        },
+                        style: cal2FieldStyle({ height: 26, width: 76, cursor: 'pointer' }),
+                      },
+                      Array.from({ length: 31 }, function makeDay(value, index) {
+                        const day = index + 1
+                        return h('option', { key: day, value: String(day) }, String(day))
+                      }),
+                    ),
+                    h('span', { key: 'suffix' }, '日'),
+                  ],
+                )
+              : null,
+          ]),
+          h('div', { key: 'tags' }, [
+            cal2FieldLabel('标签'),
+            tags.length
+              ? h(
+                  'div',
+                  { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+                  tags.map(function renderTag(tag) {
+                    const active = (Array.isArray(form.tagIds) ? form.tagIds : []).indexOf(tag.id) >= 0
+                    return h(
+                      'button',
+                      {
+                        key: tag.id,
+                        type: 'button',
+                        title: tag.name || '',
+                        onClick: function pickTag() {
+                          toggleTag(tag.id)
+                        },
+                        style: chipStyle(active),
+                      },
+                      tag.name || '未命名标签',
+                    )
+                  }),
+                )
+              : h(
+                  'div',
+                  { style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.text.tertiary, padding: '2px 0' } },
+                  '暂无标签，可在任务 Tab 创建',
+                ),
+          ]),
+          h('div', { key: 'notes' }, [
+            cal2FieldLabel('备注'),
+            h('textarea', {
+              value: form.notes || '',
+              rows: 3,
+              placeholder: '备注（可选）',
+              onChange: function onNotes(event) {
+                update({ notes: event.currentTarget.value })
+              },
+              style: Object.assign(cal2FieldStyle(), {
+                height: 'auto',
+                minHeight: 60,
+                padding: '6px 8px',
+                resize: 'vertical',
+                lineHeight: 1.5,
+              }),
+            }),
+          ]),
           error ? h('div', { key: 'error', style: { fontSize: v2fs(V2_T.font.meta), color: V2_T.status.danger } }, error) : null,
         ]),
         h(
@@ -844,7 +1153,16 @@ function CalendarTabV2(props) {
   const [calendarTasks, setCalendarTasks] = useState([])
   const [sidebarTasks, setSidebarTasks] = useState([])
   const [lists, setLists] = useState([])
+  const [groupsByList, setGroupsByList] = useState({})
+  const [tags, setTags] = useState([])
   const [listFilter, setListFilter] = useState('all')
+  const [barSort, setBarSort] = useState(function initialBarSort() {
+    const stored = cal2ReadPanePrefs().barSort
+    return stored === 'priority' || stored === 'created' || stored === 'custom' ? stored : 'date'
+  })
+  const [barGroupBy, setBarGroupBy] = useState(function initialBarGroupBy() {
+    return cal2ReadPanePrefs().barGroupBy === 'group' ? 'group' : 'list'
+  })
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [reloadTick, setReloadTick] = useState(0)
@@ -857,6 +1175,7 @@ function CalendarTabV2(props) {
   const [dragOverAllDay, setDragOverAllDay] = useState(null)
   const [draggingTaskId, setDraggingTaskId] = useState(null)
   const [draft, setDraft] = useState(null)
+  const [jumpOpen, setJumpOpen] = useState(false)
   const [nowMinutes, setNowMinutes] = useState(function initialNow() {
     const date = new Date()
     return date.getHours() * 60 + date.getMinutes()
@@ -869,12 +1188,45 @@ function CalendarTabV2(props) {
   const inlineLockRef = useRef(false)
   const gridScrollRef = useRef(null)
   const barDragRef = useRef(null)
+  const jumpWrapRef = useRef(null)
+  const jumpPanelRef = useRef(null)
 
   useEffect(
     function persistBarWidth() {
       cal2SavePanePrefs({ barWidth: barWidth })
     },
     [barWidth],
+  )
+
+  useEffect(
+    function persistBarView() {
+      cal2SavePanePrefs({ barSort: barSort, barGroupBy: barGroupBy })
+    },
+    [barSort, barGroupBy],
+  )
+
+  /* 日期跳转浮层：打开时自动点开 V2DatePicker 的 trigger，并支持点击外部关闭 */
+  useEffect(
+    function openJumpPicker() {
+      if (!jumpOpen) return undefined
+      const wrap = jumpWrapRef.current
+      const panel = jumpPanelRef.current
+      if (!wrap || !panel) return undefined
+      const trigger = panel.querySelector('button')
+      const timer = window.setTimeout(function clickTrigger() {
+        if (trigger && trigger.isConnected) trigger.click()
+      }, 0)
+      function onOutside(event) {
+        if (wrap.contains(event.target)) return
+        setJumpOpen(false)
+      }
+      document.addEventListener('mousedown', onOutside, true)
+      return function cleanup() {
+        window.clearTimeout(timer)
+        document.removeEventListener('mousedown', onOutside, true)
+      }
+    },
+    [jumpOpen],
   )
 
   function startBarResize(event) {
@@ -930,31 +1282,76 @@ function CalendarTabV2(props) {
     entriesByDay[dayKey].push(entry)
   }
   filteredTasks.forEach(function buildEntry(task) {
-    const startIso = cal2TaskStartIso(task)
-    if (startIso && task.isAllDay !== true) {
-      const startParts = cal2IsoToParts(startIso)
-      if (!startParts) return
-      const endParts = cal2IsoToParts(cal2TaskEndIso(task))
-      let endMin = endParts && endParts.dateKey === startParts.dateKey ? endParts.minutes : 24 * 60
-      if (endMin <= startParts.minutes) endMin = Math.min(24 * 60, startParts.minutes + CAL2_DEFAULT_DURATION)
-      pushEntry(startParts.dateKey, {
-        task: task,
-        timed: true,
-        allDay: false,
-        dueOnly: false,
-        startMin: startParts.minutes,
-        endMin: endMin,
+    /* 跨天任务（或带 start/end 的全天范围）按本地日期逐日切段，每天只出现一次 */
+    const range = cal2TaskRange(task)
+    if (range) {
+      const dayKeys = cal2TaskDayKeys(range)
+      if (range.allDay) {
+        dayKeys.forEach(function pushAllDay(dayKey) {
+          const segment = cal2TaskSegment(range, dayKey)
+          pushEntry(dayKey, {
+            task: task,
+            timed: false,
+            allDay: true,
+            dueOnly: false,
+            startMin: 0,
+            endMin: 0,
+            segment: segment ? segment.segment : 'single',
+          })
+        })
+        return
+      }
+      if (!range.multiDay) {
+        pushEntry(range.startKey, {
+          task: task,
+          timed: true,
+          allDay: false,
+          dueOnly: false,
+          startMin: range.startMin,
+          endMin: range.endMin,
+          segment: 'single',
+        })
+        return
+      }
+      dayKeys.forEach(function pushTimedSegment(dayKey) {
+        const segment = cal2TaskSegment(range, dayKey)
+        if (!segment) return
+        pushEntry(dayKey, {
+          task: task,
+          timed: true,
+          allDay: false,
+          dueOnly: false,
+          startMin: segment.startMin,
+          endMin: segment.endMin,
+          segment: segment.segment,
+        })
       })
       return
     }
     const scheduledDate = cal2TaskScheduledDate(task)
     if (scheduledDate) {
-      pushEntry(scheduledDate, { task: task, timed: false, allDay: true, dueOnly: false, startMin: 0, endMin: 0 })
+      pushEntry(scheduledDate, {
+        task: task,
+        timed: false,
+        allDay: true,
+        dueOnly: false,
+        startMin: 0,
+        endMin: 0,
+        segment: 'single',
+      })
       return
     }
     const dueDate = cal2TaskDueDate(task)
     if (dueDate) {
-      pushEntry(dueDate, { task: task, timed: false, allDay: false, dueOnly: true, startMin: 0, endMin: 0 })
+      pushEntry(dueDate, {
+        task: task,
+        timed: false,
+        allDay: false,
+        dueOnly: true,
+        startMin: 0,
+        endMin: 0,
+        segment: 'single',
+      })
     }
   })
   Object.keys(entriesByDay).forEach(function sortDay(day) {
@@ -970,7 +1367,10 @@ function CalendarTabV2(props) {
   Object.keys(entriesByDay).forEach(function scanDay(day) {
     if (hasEarlyTimed) return
     entriesByDay[day].forEach(function scanEntry(entry) {
-      if (entry.timed && entry.startMin < 360) hasEarlyTimed = true
+      /* 只统计真正的起点段，避免跨日延续段把时间轴整体展开到 0 点 */
+      if (entry.timed && entry.startMin < 360 && entry.segment !== 'mid' && entry.segment !== 'end') {
+        hasEarlyTimed = true
+      }
     })
   })
   const offsetMinutes = hasEarlyTimed || expandEarly ? 0 : 360
@@ -1021,6 +1421,33 @@ function CalendarTabV2(props) {
       listsResult.ok && listsResult.value && Array.isArray(listsResult.value.items)
         ? listsResult.value.items
         : []
+    /* 任务栏“按分组”视图需要每个清单的分组；全部失败时保留旧值 */
+    let groupsNext = groupsByList
+    if (listsNext.length) {
+      const groupResults = await Promise.all(
+        listsNext.map(function loadGroups(list) {
+          return cal2Settle(apiRequest('/lists/' + encodeURIComponent(list.id) + '/groups'))
+        }),
+      )
+      if (seq !== loadSeqRef.current) return
+      const allGroupsFailed = groupResults.every(function anyFailed(result) {
+        return !result || !result.ok
+      })
+      if (!allGroupsFailed) {
+        groupsNext = {}
+        listsNext.forEach(function assignGroups(list, index) {
+          const result = groupResults[index]
+          groupsNext[list.id] =
+            result && result.ok && result.value && Array.isArray(result.value.items) ? result.value.items : []
+        })
+      }
+    }
+    const tagsResult = await cal2Settle(apiRequest('/tags'))
+    if (seq !== loadSeqRef.current) return
+    const tagsNext =
+      tagsResult.ok && tagsResult.value && Array.isArray(tagsResult.value.items) ? tagsResult.value.items : []
+    setGroupsByList(groupsNext)
+    setTags(tagsNext)
     setCalendarTasks(calendarNext)
     setSidebarTasks(sidebarNext)
     setLists(listsNext)
@@ -1148,6 +1575,13 @@ function CalendarTabV2(props) {
     setEditing({ isNew: true, task: null, defaultDate: dateKey || todayKey })
   }
 
+  /* 顶部标题日期跳转：只移动 anchor，保留当前视图 */
+  function pickJumpDate(dayKey) {
+    if (!cal2IsDateKey(dayKey)) return
+    setAnchor(dayKey)
+    setJumpOpen(false)
+  }
+
   function toggleBar() {
     setBarCollapsed(function flip(value) {
       return !value
@@ -1205,6 +1639,30 @@ function CalendarTabV2(props) {
       { type: 'separator' },
       { label: '收起任务栏', onClick: toggleBar },
     ])
+  }
+
+  /* 收起状态下的排序 / 分组菜单 */
+  function openBarViewMenu(event) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const items = []
+    CAL2_BAR_SORT_DEFS.forEach(function sortItem(def) {
+      items.push({
+        label: (barSort === def.id ? '✓ ' : '') + '排序：' + def.label,
+        onClick: function pickSort() {
+          setBarSort(def.id)
+        },
+      })
+    })
+    items.push({ type: 'separator' })
+    CAL2_BAR_GROUP_DEFS.forEach(function groupItem(def) {
+      items.push({
+        label: (barGroupBy === def.id ? '✓ ' : '') + '分组：' + def.label,
+        onClick: function pickGroup() {
+          setBarGroupBy(def.id)
+        },
+      })
+    })
+    cal2OpenMenu(rect.right - 190, rect.bottom + 6, items)
   }
 
   /* ── 编辑弹窗保存 ── */
@@ -1406,13 +1864,19 @@ function CalendarTabV2(props) {
     if (target && target.closest) {
       if (target.closest('[data-cal2-event]') || target.closest('input') || target.closest('[data-cal2-inline]')) return
     }
+    /* 拖选气泡打开时，点击外部先关闭气泡，不立即开始新的创建 */
+    if (inline && inline.kind === 'slot') {
+      cancelInline()
+      setDraft(null)
+      return
+    }
     event.preventDefault()
     const column = event.currentTarget
     const rect = column.getBoundingClientRect()
     const startY = event.clientY
     const anchorMin = cal2Clamp(cal2SnapMins(((startY - rect.top) / hourPx) * 60 + offsetMinutes, 15), 0, 24 * 60 - 15)
     let moved = false
-    let range = { startMin: anchorMin, endMin: Math.min(24 * 60, anchorMin + 30) }
+    let range = { startMin: anchorMin, endMin: Math.min(24 * 60, anchorMin + 15) }
     setDraft({ day: dayKey, startMin: range.startMin, endMin: range.endMin })
     function finish() {
       window.removeEventListener('pointermove', onMove)
@@ -1424,27 +1888,32 @@ function CalendarTabV2(props) {
       return cal2Clamp(cal2SnapMins(((clientY - rect.top) / hourPx) * 60 + offsetMinutes, 15), 0, 24 * 60)
     }
     function onMove(moveEvent) {
-      if (!moved && Math.abs(moveEvent.clientY - startY) > 3) moved = true
+      if (!moved && Math.abs(moveEvent.clientY - startY) > CAL2_DRAG_SELECT_THRESHOLD) moved = true
       if (!moved) return
       const current = toMins(moveEvent.clientY)
       const low = Math.min(anchorMin, current)
       const high = Math.max(anchorMin, current)
-      range = { startMin: low, endMin: Math.max(low + 15, high) }
+      range = { startMin: low, endMin: Math.max(low + CAL2_MIN_DURATION, high) }
       setDraft({ day: dayKey, startMin: range.startMin, endMin: range.endMin })
     }
     function onUp(upEvent) {
       finish()
-      setDraft(null)
-      if (upEvent && upEvent.type === 'pointercancel') return
-      let startMin
-      let endMin
-      if (moved && range.endMin - range.startMin >= 30) {
-        startMin = cal2Clamp(cal2SnapMins(range.startMin, 30), 0, 24 * 60 - 30)
-        endMin = cal2Clamp(cal2SnapMins(range.endMin, 30), startMin + 30, 24 * 60)
-      } else {
-        startMin = cal2Clamp(cal2SnapMins(anchorMin, 30), 0, 24 * 60 - CAL2_DEFAULT_DURATION)
-        endMin = Math.min(24 * 60, startMin + CAL2_DEFAULT_DURATION)
+      if (upEvent && upEvent.type === 'pointercancel') {
+        setDraft(null)
+        return
       }
+      if (moved && range.endMin - range.startMin >= CAL2_MIN_DURATION) {
+        /* 拖选：保留高亮覆盖层，在选区旁弹出气泡输入框 */
+        const startMin = cal2Clamp(cal2SnapMins(range.startMin, 15), 0, 24 * 60 - CAL2_MIN_DURATION)
+        const endMin = cal2Clamp(cal2SnapMins(range.endMin, 15), startMin + CAL2_MIN_DURATION, 24 * 60)
+        setDraft({ day: dayKey, startMin: startMin, endMin: endMin })
+        beginInline({ kind: 'slot', day: dayKey, startMin: startMin, endMin: endMin, value: '' })
+        return
+      }
+      /* 未达到拖动阈值：维持原有单击快速创建（30 分钟吸附 + 默认 60 分钟） */
+      setDraft(null)
+      const startMin = cal2Clamp(cal2SnapMins(anchorMin, 30), 0, 24 * 60 - CAL2_DEFAULT_DURATION)
+      const endMin = Math.min(24 * 60, startMin + CAL2_DEFAULT_DURATION)
       beginInline({ kind: 'time', day: dayKey, startMin: startMin, endMin: endMin, value: '' })
     }
     window.addEventListener('pointermove', onMove)
@@ -1546,6 +2015,7 @@ function CalendarTabV2(props) {
   function cancelInline() {
     if (inlineLockRef.current) return
     inlineLockRef.current = true
+    if (inline && inline.kind === 'slot') setDraft(null)
     setInline(null)
   }
 
@@ -1556,6 +2026,7 @@ function CalendarTabV2(props) {
     inlineLockRef.current = true
     const title = String(current.value || '').trim()
     setInline(null)
+    if (current.kind === 'slot') setDraft(null)
     if (!title) return
     if (current.kind === 'date') {
       runMutation(function createDateTask() {
@@ -1673,23 +2144,100 @@ function CalendarTabV2(props) {
           h(V2Icon, { name: 'chevronRight', size: 16 }),
         ),
         h(
-          'span',
+          'div',
           {
-            key: 'title',
-            title: headerTitle,
+            key: 'title-wrap',
+            ref: jumpWrapRef,
             style: {
-              fontSize: v2fs(20),
-              fontWeight: 600,
-              color: V2_T.text.primary,
+              position: 'relative',
+              display: 'inline-flex',
+              alignItems: 'center',
               marginLeft: 10,
-              letterSpacing: '-0.2px',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
               minWidth: 0,
             },
           },
-          headerTitle,
+          [
+            h(
+              'button',
+              {
+                key: 'title',
+                type: 'button',
+                title: headerTitle + '（点击跳转到日期）',
+                onClick: function toggleJump() {
+                  setJumpOpen(function flip(value) {
+                    return !value
+                  })
+                },
+                style: {
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: 0,
+                  border: 'none',
+                  background: 'transparent',
+                  fontFamily: COLORS.fontFamily,
+                  fontSize: v2fs(20),
+                  fontWeight: 600,
+                  color: V2_T.text.primary,
+                  letterSpacing: '-0.2px',
+                  cursor: 'pointer',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                },
+              },
+              [
+                h(
+                  'span',
+                  {
+                    key: 'text',
+                    style: {
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      minWidth: 0,
+                    },
+                  },
+                  headerTitle,
+                ),
+                h(
+                  'span',
+                  {
+                    key: 'caret',
+                    'aria-hidden': 'true',
+                    style: {
+                      fontSize: v2fs(10),
+                      color: V2_T.text.tertiary,
+                      flex: '0 0 auto',
+                      transform: jumpOpen ? 'translateY(-1px)' : 'none',
+                    },
+                  },
+                  jumpOpen ? '▲' : '▼',
+                ),
+              ],
+            ),
+            jumpOpen
+              ? h(
+                  'div',
+                  {
+                    key: 'jump-panel',
+                    ref: jumpPanelRef,
+                    style: {
+                      position: 'absolute',
+                      left: 0,
+                      top: 'calc(100% + 6px)',
+                      zIndex: 100002,
+                    },
+                  },
+                  h(V2DatePicker, {
+                    value: anchor,
+                    compact: true,
+                    placeholder: '选择日期',
+                    title: '跳转到日期',
+                    onChange: pickJumpDate,
+                  }),
+                )
+              : null,
+          ],
         ),
         loading
           ? h(
@@ -1791,16 +2339,32 @@ function CalendarTabV2(props) {
     const task = entry.task
     const color = cal2TaskColor(task)
     const hasPriority = !!(task.priority && task.priority !== 'none')
+    const segment = entry.segment || 'single'
+    const multi = segment !== 'single'
+    const segmentLabel = cal2SegmentLabel(segment)
     const timeText = entry.timed
-      ? cal2MinToHm(entry.startMin)
+      ? segment === 'mid'
+        ? ''
+        : segment === 'end'
+          ? cal2MinToHm(entry.endMin)
+          : cal2MinToHm(entry.startMin)
       : entry.dueOnly
         ? '截止'
         : ''
+    const radius =
+      segment === 'start'
+        ? '6px 2px 2px 6px'
+        : segment === 'mid'
+          ? '2px'
+          : segment === 'end'
+            ? '2px 6px 6px 2px'
+            : 6
     return h(
       'div',
       {
         key: task.id,
         draggable: true,
+        'data-cal2-segment': segment,
         onDragStart: function onDragStart(event) {
           startHtmlDrag(event, task)
         },
@@ -1810,8 +2374,11 @@ function CalendarTabV2(props) {
           openEdit(task)
         },
         onMouseEnter: cal2HoverIn(V2_T.surface.panel3),
-        onMouseLeave: cal2HoverOut(V2_T.surface.panel2),
-        title: task.title + (entry.timed ? ' ' + cal2MinToHm(entry.startMin) + '–' + cal2MinToHm(entry.endMin) : ''),
+        onMouseLeave: cal2HoverOut(multi ? 'rgba(110, 168, 254, 0.12)' : V2_T.surface.panel2),
+        title:
+          task.title +
+          (entry.timed ? ' ' + cal2MinToHm(entry.startMin) + '–' + cal2MinToHm(entry.endMin) : '') +
+          (multi ? ' · ' + segmentLabel : ''),
         style: {
           display: 'flex',
           alignItems: 'center',
@@ -1819,10 +2386,12 @@ function CalendarTabV2(props) {
           height: 20,
           padding: '0 6px',
           marginBottom: 2,
-          borderRadius: 6,
+          borderRadius: radius,
           border: '1px solid ' + V2_T.border.subtle,
-          borderLeft: '2px solid ' + (hasPriority ? color : 'transparent'),
-          background: V2_T.surface.panel2,
+          borderLeft:
+            '2px solid ' +
+            (segment === 'start' || !multi ? (hasPriority ? color : 'transparent') : V2_T.accent.line),
+          background: multi ? 'rgba(110, 168, 254, 0.12)' : V2_T.surface.panel2,
           fontSize: v2fs(V2_T.font.caption),
           color: V2_T.text.primary,
           whiteSpace: 'nowrap',
@@ -1833,6 +2402,20 @@ function CalendarTabV2(props) {
         },
       },
       [
+        segmentLabel
+          ? h(
+              'span',
+              {
+                key: 'segment',
+                style: {
+                  fontSize: v2fs(9.5),
+                  color: V2_T.accent.base,
+                  flex: '0 0 auto',
+                },
+              },
+              segmentLabel,
+            )
+          : null,
         timeText
           ? h(
               'span',
@@ -1847,7 +2430,13 @@ function CalendarTabV2(props) {
               timeText,
             )
           : null,
-        h('span', { key: 'title', style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, task.title),
+        h(
+          'span',
+          { key: 'title', style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } },
+          (segment === 'mid' ? '↔ ' : segment === 'end' ? '← ' : '') +
+            task.title +
+            (segment === 'start' ? ' →' : ''),
+        ),
       ],
     )
   }
@@ -2221,6 +2810,96 @@ function CalendarTabV2(props) {
     )
   }
 
+  /* 拖选后的小气泡输入框：位于选区旁，Enter 保存 / Esc 或点击外部关闭 */
+  function renderSlotBubble() {
+    const boxTop = Math.max(0, ((inline.startMin - offsetMinutes) * hourPx) / 60)
+    const boxHeight = Math.max(24, ((inline.endMin - inline.startMin) * hourPx) / 60)
+    const gridHeight = ((24 * 60 - offsetMinutes) * hourPx) / 60
+    const panelHeight = 76
+    const top =
+      boxTop + boxHeight + 4 + panelHeight <= gridHeight
+        ? boxTop + boxHeight + 4
+        : Math.max(0, boxTop - panelHeight - 4)
+    return h(
+      'div',
+      {
+        key: 'slot-bubble',
+        'data-cal2-inline': 'slot',
+        onPointerDown: function stopPointer(event) {
+          event.stopPropagation()
+        },
+        onClick: function stopClick(event) {
+          event.stopPropagation()
+        },
+        style: {
+          position: 'absolute',
+          left: 6,
+          right: 6,
+          top: top,
+          zIndex: 12,
+          background: V2_T.surface.panel,
+          border: '1px solid ' + V2_T.accent.line,
+          borderRadius: V2_T.radius.sm,
+          boxShadow: V2_T.shadow.pop,
+          padding: 6,
+          boxSizing: 'border-box',
+        },
+      },
+      [
+        h(
+          'div',
+          {
+            key: 'range',
+            style: {
+              fontSize: v2fs(10),
+              color: V2_T.text.tertiary,
+              marginBottom: 4,
+              whiteSpace: 'nowrap',
+            },
+          },
+          cal2MinToHm(inline.startMin) + ' – ' + cal2MinToHm(inline.endMin),
+        ),
+        h('input', {
+          key: 'input',
+          autoFocus: true,
+          value: inline.value,
+          placeholder: '新任务，Enter 保存',
+          onChange: function onChange(event) {
+            const value = event.currentTarget.value
+            setInline(function merge(prev) {
+              return prev ? Object.assign({}, prev, { value: value }) : prev
+            })
+          },
+          onKeyDown: function onKeyDown(event) {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              commitInline()
+            } else if (event.key === 'Escape') {
+              event.preventDefault()
+              cancelInline()
+            }
+          },
+          onBlur: function onBlur() {
+            cancelInline()
+          },
+          style: {
+            width: '100%',
+            boxSizing: 'border-box',
+            height: 26,
+            background: V2_T.surface.input,
+            border: '1px solid ' + V2_T.border.subtle,
+            borderRadius: V2_T.radius.sm,
+            color: V2_T.text.primary,
+            fontSize: v2fs(V2_T.font.meta),
+            padding: '0 6px',
+            outline: 'none',
+            fontFamily: COLORS.fontFamily,
+          },
+        }),
+      ],
+    )
+  }
+
   function renderDayColumn(day, index) {
     const gridHeight = ((24 * 60 - offsetMinutes) * hourPx) / 60
     const entries = entriesByDay[day] || []
@@ -2272,10 +2951,22 @@ function CalendarTabV2(props) {
       const visibleLanes = Math.min(3, item.laneTotal)
       const leftPct = (item.lane / visibleLanes) * 100
       const widthPct = 100 / visibleLanes
-      const top = Math.max(0, ((item.startMin - offsetMinutes) * hourPx) / 60)
-      const height = Math.max(16, ((item.endMin - item.startMin) * hourPx) / 60)
+      const segment = item.segment || 'single'
+      const multiSegment = segment !== 'single'
+      const segmentLabel = cal2SegmentLabel(segment)
+      /* 跨日切段：起点段只画到 24:00，中间/收尾段从 00:00 开始，并按时间轴裁剪 */
+      const shownStart = Math.max(item.startMin, offsetMinutes)
+      const shownEnd = Math.max(shownStart + CAL2_MIN_DURATION, Math.min(24 * 60, item.endMin))
+      const top = Math.max(0, ((shownStart - offsetMinutes) * hourPx) / 60)
+      const height = Math.max(16, ((shownEnd - shownStart) * hourPx) / 60)
       const color = cal2TaskColor(item.task)
-      const timeText = cal2MinToHm(item.startMin) + ' – ' + cal2MinToHm(item.endMin)
+      const timeText = multiSegment
+        ? segment === 'mid'
+          ? '全天延续'
+          : segment === 'end'
+            ? '00:00 – ' + cal2MinToHm(item.endMin)
+            : cal2MinToHm(item.startMin) + ' – 24:00'
+        : cal2MinToHm(item.startMin) + ' – ' + cal2MinToHm(item.endMin)
       const previewing = dragPreview && dragPreview.taskId === item.task.id
       const hiddenSiblings = item.hiddenSiblings || []
       children.push(
@@ -2284,10 +2975,19 @@ function CalendarTabV2(props) {
           {
             key: 'ev-' + item.task.id,
             'data-cal2-event': '1',
-            title: item.task.title + ' ' + timeText,
-            onPointerDown: function startMove(event) {
-              beginEventDrag(event, Object.assign({ langDay: day }, item), 'move')
-            },
+            'data-cal2-segment': segment,
+            title: item.task.title + ' ' + (multiSegment ? segmentLabel + ' ' : '') + timeText,
+            onPointerDown: multiSegment
+              ? undefined
+              : function startMove(event) {
+                  beginEventDrag(event, Object.assign({ langDay: day }, item), 'move')
+                },
+            onClick: multiSegment
+              ? function openMultiDay(event) {
+                  event.stopPropagation()
+                  openEdit(item.task)
+                }
+              : undefined,
             onMouseEnter: function hoverIn(event) {
               event.currentTarget.style.background = color + '2e'
               event.currentTarget.style.boxShadow = V2_T.shadow.card
@@ -2348,7 +3048,7 @@ function CalendarTabV2(props) {
                   textOverflow: 'ellipsis',
                 },
               },
-              timeText,
+              (multiSegment ? segmentLabel + ' · ' : '') + timeText,
             ),
             hiddenSiblings.length
               ? h(
@@ -2394,20 +3094,24 @@ function CalendarTabV2(props) {
                   '＋' + hiddenSiblings.length,
                 )
               : null,
-            h('div', {
-              key: 'resize-start',
-              onPointerDown: function startResize(event) {
-                beginEventDrag(event, Object.assign({ langDay: day }, item), 'start')
-              },
-              style: { position: 'absolute', left: 0, right: 0, top: 0, height: 6, cursor: 'ns-resize', zIndex: 3 },
-            }),
-            h('div', {
-              key: 'resize-end',
-              onPointerDown: function endResize(event) {
-                beginEventDrag(event, Object.assign({ langDay: day }, item), 'end')
-              },
-              style: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, cursor: 'ns-resize', zIndex: 3 },
-            }),
+            multiSegment
+              ? null
+              : h('div', {
+                  key: 'resize-start',
+                  onPointerDown: function startResize(event) {
+                    beginEventDrag(event, Object.assign({ langDay: day }, item), 'start')
+                  },
+                  style: { position: 'absolute', left: 0, right: 0, top: 0, height: 6, cursor: 'ns-resize', zIndex: 3 },
+                }),
+            multiSegment
+              ? null
+              : h('div', {
+                  key: 'resize-end',
+                  onPointerDown: function endResize(event) {
+                    beginEventDrag(event, Object.assign({ langDay: day }, item), 'end')
+                  },
+                  style: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, cursor: 'ns-resize', zIndex: 3 },
+                }),
           ],
         ),
       )
@@ -2424,6 +3128,7 @@ function CalendarTabV2(props) {
       )
     }
     if (inline && inline.kind === 'time' && inline.day === day) children.push(renderInlineTimeInput())
+    if (inline && inline.kind === 'slot' && inline.day === day) children.push(renderSlotBubble())
     return h(
       'div',
       {
@@ -2465,6 +3170,8 @@ function CalendarTabV2(props) {
     const task = entry.task
     const color = cal2TaskColor(task)
     const hasPriority = !!(task.priority && task.priority !== 'none')
+    const segment = entry.segment || 'single'
+    const segmentLabel = cal2SegmentLabel(segment)
     return h(
       'div',
       {
@@ -2480,14 +3187,22 @@ function CalendarTabV2(props) {
         },
         onMouseEnter: cal2HoverIn(V2_T.surface.panel3),
         onMouseLeave: cal2HoverOut(V2_T.surface.panel2),
-        title: task.title,
+        'data-cal2-segment': segment,
+        title: task.title + (segmentLabel ? ' · ' + segmentLabel : ''),
         style: {
           display: 'flex',
           alignItems: 'center',
           gap: 5,
           height: 20,
           padding: '0 6px',
-          borderRadius: 6,
+          borderRadius:
+            segment === 'start'
+              ? '6px 2px 2px 6px'
+              : segment === 'mid'
+                ? '2px'
+                : segment === 'end'
+                  ? '2px 6px 6px 2px'
+                  : 6,
           border: '1px solid ' + V2_T.border.subtle,
           borderLeft: '2px solid ' + (hasPriority ? color : 'transparent'),
           background: V2_T.surface.panel2,
@@ -2501,6 +3216,13 @@ function CalendarTabV2(props) {
         },
       },
       [
+        segmentLabel
+          ? h(
+              'span',
+              { key: 'segment', style: { fontSize: v2fs(9.5), color: V2_T.accent.base, flex: '0 0 auto' } },
+              segmentLabel,
+            )
+          : null,
         entry.dueOnly
           ? h('span', { key: 'tag', style: { fontSize: v2fs(10), color: V2_T.status.warn, flex: '0 0 auto' } }, '截止')
           : null,
@@ -2756,33 +3478,134 @@ function CalendarTabV2(props) {
     return '无日期'
   }
 
+  function barCompareByDate(a, b) {
+    const dayA = cal2TaskDayKey(a) || '9999-99-99'
+    const dayB = cal2TaskDayKey(b) || '9999-99-99'
+    if (dayA !== dayB) return dayA < dayB ? -1 : 1
+    const startA = cal2IsoToParts(cal2TaskStartIso(a))
+    const startB = cal2IsoToParts(cal2TaskStartIso(b))
+    const minA = startA ? startA.minutes : 9999
+    const minB = startB ? startB.minutes : 9999
+    if (minA !== minB) return minA - minB
+    return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
+  }
+
+  function barCompareByPriority(a, b) {
+    const rank = { high: 0, medium: 1, low: 2, none: 3 }
+    const rankA = rank[a.priority] === undefined ? 3 : rank[a.priority]
+    const rankB = rank[b.priority] === undefined ? 3 : rank[b.priority]
+    if (rankA !== rankB) return rankA - rankB
+    return barCompareByDate(a, b)
+  }
+
+  function barCompareByCreated(a, b) {
+    const createdA = String(a.createdAt || a.created_at || '')
+    const createdB = String(b.createdAt || b.created_at || '')
+    if (createdA !== createdB) return createdA < createdB ? -1 : 1
+    return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
+  }
+
+  function barTaskPinned(task) {
+    return task.pinned === true || task.isPinned === true || task.is_pinned === true
+  }
+
+  function barCompareByCustom(a, b) {
+    const pinA = barTaskPinned(a) ? 1 : 0
+    const pinB = barTaskPinned(b) ? 1 : 0
+    if (pinA !== pinB) return pinB - pinA
+    const orderA = Number(a.sortOrder !== undefined ? a.sortOrder : a.sort_order)
+    const orderB = Number(b.sortOrder !== undefined ? b.sortOrder : b.sort_order)
+    const safeA = Number.isFinite(orderA) ? orderA : Number.MAX_SAFE_INTEGER
+    const safeB = Number.isFinite(orderB) ? orderB : Number.MAX_SAFE_INTEGER
+    if (safeA !== safeB) return safeA - safeB
+    return barCompareByCreated(a, b)
+  }
+
+  function barSortTasks(items) {
+    const sorted = (items || []).slice()
+    if (barSort === 'priority') sorted.sort(barCompareByPriority)
+    else if (barSort === 'created') sorted.sort(barCompareByCreated)
+    else if (barSort === 'custom') sorted.sort(barCompareByCustom)
+    else sorted.sort(barCompareByDate)
+    return sorted
+  }
+
+  /* 任务栏分组：默认按清单，可切换按分组（清单 · 分组）；组内再应用排序 */
   function buildBarGroups() {
-    const groups = { today: [], week: [], later: [], none: [] }
-    const weekEnd = cal2AddDays(todayKey, 7)
-    filteredTasks.forEach(function classify(task) {
-      const day = cal2TaskDayKey(task)
-      if (!day) groups.none.push(task)
-      else if (day === todayKey) groups.today.push(task)
-      else if (day > todayKey && day <= weekEnd) groups.week.push(task)
-      else groups.later.push(task)
+    const groups = []
+    const listIds = {}
+    lists.forEach(function markList(list) {
+      listIds[list.id] = true
     })
-    function sortGroup(a, b) {
-      const dayA = cal2TaskDayKey(a) || '9999-99-99'
-      const dayB = cal2TaskDayKey(b) || '9999-99-99'
-      if (dayA !== dayB) return dayA < dayB ? -1 : 1
-      const startA = cal2IsoToParts(cal2TaskStartIso(a))
-      const startB = cal2IsoToParts(cal2TaskStartIso(b))
-      const minA = startA ? startA.minutes : 9999
-      const minB = startB ? startB.minutes : 9999
-      if (minA !== minB) return minA - minB
-      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
+    /* Host 约定：无 listId 的任务属于收件箱；找不到收件箱时才归入“未分组” */
+    const barInbox =
+      lists.filter(function findInbox(list) {
+        return list && list.kind === 'inbox'
+      })[0] || null
+    function taskBelongsToList(task, list) {
+      const listId = cal2TaskListId(task)
+      if (listId) return listId === list.id
+      return !!(barInbox && list.id === barInbox.id)
     }
-    return [
-      { key: 'today', label: '今天', items: groups.today.slice().sort(sortGroup) },
-      { key: 'week', label: '最近 7 天', items: groups.week.slice().sort(sortGroup) },
-      { key: 'later', label: '更远', items: groups.later.slice().sort(sortGroup) },
-      { key: 'none', label: '无日期', items: groups.none.slice().sort(sortGroup) },
-    ]
+    function isOrphan(task) {
+      const listId = cal2TaskListId(task)
+      if (listId) return !listIds[listId]
+      return !barInbox
+    }
+    if (barGroupBy === 'group') {
+      lists.forEach(function eachList(list) {
+        const listTasks = filteredTasks.filter(function matchListTask(task) {
+          return taskBelongsToList(task, list)
+        })
+        if (!listTasks.length) return
+        const availableGroups = groupsByList[list.id] || []
+        const matched = {}
+        availableGroups.forEach(function eachGroup(group) {
+          const items = listTasks.filter(function inGroup(task) {
+            return (task.groupId || task.group_id || '') === group.id
+          })
+          if (!items.length) return
+          matched[group.id] = true
+          groups.push({
+            key: 'g-' + list.id + '-' + group.id,
+            label: (list.name || '未命名清单') + ' · ' + (group.name || '未命名分组'),
+            items: barSortTasks(items),
+          })
+        })
+        const rest = listTasks.filter(function notGrouped(task) {
+          const groupId = task.groupId || task.group_id || ''
+          return !groupId || !matched[groupId]
+        })
+        if (rest.length) {
+          groups.push({
+            key: 'g-' + list.id + '-none',
+            label: (list.name || '未命名清单') + ' · 未分组',
+            items: barSortTasks(rest),
+          })
+        }
+      })
+      const orphans = filteredTasks.filter(isOrphan)
+      if (orphans.length) {
+        groups.push({ key: 'g-orphans', label: '未分组', items: barSortTasks(orphans) })
+      }
+      return groups
+    }
+    lists.forEach(function eachList(list) {
+      const items = filteredTasks.filter(function matchListTask(task) {
+        return taskBelongsToList(task, list)
+      })
+      if (!items.length) return
+      groups.push({
+        key: 'l-' + list.id,
+        label: list.name || '未命名清单',
+        items: barSortTasks(items),
+      })
+    })
+    const orphans = filteredTasks.filter(isOrphan)
+    if (orphans.length) {
+      groups.push({ key: 'l-orphans', label: '未分组', items: barSortTasks(orphans) })
+    }
+    return groups
   }
 
   function renderSidebar() {
@@ -2836,6 +3659,19 @@ function CalendarTabV2(props) {
             },
             '任务 ' + filteredTasks.length,
           ),
+          h(
+            'button',
+            {
+              key: 'view',
+              type: 'button',
+              title: '排序 / 分组',
+              onClick: openBarViewMenu,
+              style: barIconBtnStyle,
+              onMouseEnter: cal2HoverIn(V2_T.surface.panel2),
+              onMouseLeave: cal2HoverOut('transparent'),
+            },
+            h(V2Icon, { name: 'layers', size: 15 }),
+          ),
         ],
       )
     }
@@ -2872,10 +3708,23 @@ function CalendarTabV2(props) {
                 },
               },
               [
-                h('span', { key: 'label' }, group.label),
                 h(
                   'span',
-                  { key: 'count', style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 500, color: V2_T.text.tertiary } },
+                  { key: 'label', style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                  group.label,
+                ),
+                h(
+                  'span',
+                  {
+                    key: 'count',
+                    style: {
+                      fontSize: v2fs(V2_T.font.caption),
+                      fontWeight: 500,
+                      color: V2_T.text.tertiary,
+                      flex: '0 0 auto',
+                      marginLeft: 6,
+                    },
+                  },
                   String(group.items.length),
                 ),
               ],
@@ -3062,6 +3911,63 @@ function CalendarTabV2(props) {
         h(
           'div',
           {
+            key: 'viewbar',
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 8px',
+              borderBottom: '1px solid ' + V2_T.border.subtle,
+              flex: '0 0 auto',
+              boxSizing: 'border-box',
+            },
+          },
+          [
+            h(
+              'select',
+              {
+                key: 'sort',
+                value: barSort,
+                title: '排序方式',
+                onChange: function onChange(event) {
+                  setBarSort(event.currentTarget.value)
+                },
+                style: Object.assign(cal2FieldStyle({ height: 24, fontSize: v2fs(11), cursor: 'pointer' }), {
+                  flex: '1 1 0',
+                  width: 'auto',
+                  minWidth: 0,
+                  padding: '0 4px',
+                }),
+              },
+              CAL2_BAR_SORT_DEFS.map(function renderSort(def) {
+                return h('option', { key: def.id, value: def.id }, def.label)
+              }),
+            ),
+            h(
+              'select',
+              {
+                key: 'groupby',
+                value: barGroupBy,
+                title: '分组方式',
+                onChange: function onChange(event) {
+                  setBarGroupBy(event.currentTarget.value)
+                },
+                style: Object.assign(cal2FieldStyle({ height: 24, fontSize: v2fs(11), cursor: 'pointer' }), {
+                  flex: '1 1 0',
+                  width: 'auto',
+                  minWidth: 0,
+                  padding: '0 4px',
+                }),
+              },
+              CAL2_BAR_GROUP_DEFS.map(function renderGroupBy(def) {
+                return h('option', { key: def.id, value: def.id }, def.label)
+              }),
+            ),
+          ],
+        ),
+        h(
+          'div',
+          {
             key: 'list',
             style: {
               flex: '1 1 auto',
@@ -3201,6 +4107,7 @@ function CalendarTabV2(props) {
             isNew: editing.isNew === true,
             defaultDate: editing.defaultDate || '',
             lists: lists,
+            tags: tags,
             onClose: function closeModal() {
               setEditing(null)
             },
