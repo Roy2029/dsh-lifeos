@@ -20490,7 +20490,7 @@ function CalendarTabV2(props) {
   )
 }
 
-/* ---- 40-habits.js (3819 lines) ---- */
+/* ---- 40-habits.js (4844 lines) ---- */
 /* ═══════════════════════ M6 · V2 习惯 Tab ═══════════════════════
  * 入口：HabitTabV2({ runtime, narrow })
  * 数据源：GET /habits、GET /habits/stats、GET /habits/:id/checkins、GET /habits/month
@@ -20500,7 +20500,8 @@ function CalendarTabV2(props) {
  *  - Host 之后端只有 habit 表 + habit_checkin 表，没有独立的习惯日志表；
  *    规格里的“打卡日志”落到 checkin.note 上，删除日志 = note 置空（打卡记录保留）。
  *  - 补打卡窗口：过去日期必须带 retro 且最近 7 天内（RETRO_WINDOW_DAYS）。
- *  - 图标/分组不属于 Host 数据模型，图标按名称推导，列表按“当日计划 / 灵活打卡 / 已暂停”分组。
+ *  - M18（schema v4）：Host 已有 habit_group 表与 habit.icon / habit.group_id 字段；
+ *    图标优先用 habit.icon（未设置时按名称推导），列表按习惯分组渲染，未分组兜底。
  */
 
 const HABIT_LIST_WIDTH = 400
@@ -20546,6 +20547,56 @@ const HABIT_FREQUENCY_KINDS = [
   { id: 'interval', label: '间隔 N 天' },
 ]
 const HABIT_ICON_FALLBACKS = ['🌱', '🪴', '🌿', '🍀', '🌳', '🌵', '🍃', '🌾']
+/* M18 图标选择器：常用 emoji 矩阵（不做搜索）+ 最近使用 8 个（localStorage）。 */
+const HABIT_ICON_MATRIX = [
+  '🌱', '🪴', '🌿', '🍀', '🌳', '🌵', '🍃', '🌾',
+  '🏃', '🚶', '🚴', '🏊', '🏋️', '🧘', '🤸', '⛹️',
+  '📖', '✍️', '📚', '💻', '🎹', '🎨', '🎵', '🖌️',
+  '💧', '🥗', '🍎', '☕', '🥛', '🍳', '💊', '🛌',
+  '⏰', '🌅', '🌙', '☀️', '🧹', '🧺', '🧴', '🪥',
+  '💰', '📝', '📅', '🎯', '🧠', '💡', '🗣️', '👨‍👩‍👧',
+  '🐕', '🐈', '🌷', '🎬', '🎮', '🧩', '🚭', '🍬',
+  '😊', '🙏', '💪', '❤️', '🔥', '⭐', '🏆', '🎁',
+  '🚇', '🚗', '✈️', '🏠', '🏢', '📱', '🛒', '🧾',
+]
+const HABIT_ICON_RECENT_KEY = 'lifeos.v2.habitIcons.recent'
+const HABIT_ICON_RECENT_MAX = 8
+const HABIT_GROUP_NAME_MAX = 40
+const HABIT_GROUP_SECTION_PREFIX = 'group:'
+const HABIT_UNGROUPED_KEY = 'ungrouped'
+
+function habitReadRecentIcons() {
+  try {
+    const raw = window.localStorage.getItem(HABIT_ICON_RECENT_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter(function keep(icon) {
+        return typeof icon === 'string' && icon.length > 0
+      })
+      .slice(0, HABIT_ICON_RECENT_MAX)
+  } catch (error) {
+    return []
+  }
+}
+
+function habitRememberIcon(icon) {
+  const value = String(icon || '').trim()
+  if (!value) return
+  const next = [value]
+    .concat(
+      habitReadRecentIcons().filter(function different(item) {
+        return item !== value
+      }),
+    )
+    .slice(0, HABIT_ICON_RECENT_MAX)
+  try {
+    window.localStorage.setItem(HABIT_ICON_RECENT_KEY, JSON.stringify(next))
+  } catch (error) {
+    /* 忽略写入失败 */
+  }
+}
 const HABIT_ICON_HINTS = [
   { keys: ['晨跑', '跑步', '跑', '慢跑'], icon: '🏃' },
   { keys: ['散步', '走路', '步行'], icon: '🚶' },
@@ -20824,6 +20875,8 @@ function habitPeriodTarget(habit) {
 }
 
 function habitIconFor(habit) {
+  const custom = habit && typeof habit.icon === 'string' ? habit.icon.trim() : ''
+  if (custom) return custom
   const name = String((habit && habit.name) || '')
   for (let i = 0; i < HABIT_ICON_HINTS.length; i += 1) {
     const entry = HABIT_ICON_HINTS[i]
@@ -20835,6 +20888,56 @@ function habitIconFor(habit) {
   let sum = 0
   for (let i = 0; i < seed.length; i += 1) sum += seed.charCodeAt(i)
   return HABIT_ICON_FALLBACKS[sum % HABIT_ICON_FALLBACKS.length]
+}
+
+/** 习惯所属分组 id（兼容 Host 的 group_id / 旧数据的 undefined）。 */
+function habitGroupIdOf(habit) {
+  const raw = habit && (habit.group_id !== undefined ? habit.group_id : habit.groupId)
+  return typeof raw === 'string' && raw ? raw : null
+}
+
+/** 分组排序：sort_order 升序 → created_at → name。 */
+function habitSortGroups(list) {
+  const groups = Array.isArray(list) ? list.slice() : []
+  return groups.sort(function compare(left, right) {
+    const leftOrder = Number(left && left.sort_order) || 0
+    const rightOrder = Number(right && right.sort_order) || 0
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder
+    const leftAt = String((left && left.created_at) || '')
+    const rightAt = String((right && right.created_at) || '')
+    if (leftAt !== rightAt) return leftAt < rightAt ? -1 : 1
+    return String((left && left.name) || '').localeCompare(String((right && right.name) || ''))
+  })
+}
+
+function habitGroupNameOf(groups, groupId) {
+  const list = Array.isArray(groups) ? groups : []
+  const found = list.filter(function match(group) {
+    return group && group.id === groupId
+  })[0]
+  return found ? found.name : '未分组'
+}
+
+/* M18：某分组内下一个 sort_order（拖入分组时追加到末尾）。 */
+function habitNextSortOrder(habits, groupId) {
+  const list = Array.isArray(habits) ? habits : []
+  let max = 0
+  list.forEach(function each(habit) {
+    if (!habit || habit.status === 'archived') return
+    if (habitGroupIdOf(habit) !== (groupId || null)) return
+    const value = Number(habit.sort_order)
+    if (Number.isFinite(value) && value > max) max = value
+  })
+  return max + 10
+}
+/* M18：把服务端的分组折叠状态合并进视图状态（组 key 以服务端为准，其它 key 原样保留）。 */
+function habitCollapsedWith(current, groups) {
+  const base = Object.assign({}, current)
+  habitSortGroups(Array.isArray(groups) ? groups : []).forEach(function each(group) {
+    if (!group || !group.id) return
+    base[HABIT_GROUP_SECTION_PREFIX + group.id] = group.collapsed === true
+  })
+  return base
 }
 
 /* ── 打卡记录工具 ── */
@@ -20925,6 +21028,16 @@ async function habitFetchStatsMap() {
       if (item && item.habitId) map[item.habitId] = item
     })
     return map
+  } catch (error) {
+    return null
+  }
+}
+
+/** M18：习惯分组列表；失败返回 null（调用方沿用旧值）。 */
+async function habitFetchGroups() {
+  try {
+    const payload = await apiRequest('/habit-groups')
+    return payload && Array.isArray(payload.items) ? payload.items : []
   } catch (error) {
     return null
   }
@@ -21171,9 +21284,27 @@ function habitLabelStyle() {
 function HabitIconBadge(props) {
   const size = props.size || 30
   const habit = props.habit
+  const clickable = typeof props.onClick === 'function'
   return h(
     'div',
     {
+      role: clickable ? 'button' : undefined,
+      tabIndex: clickable ? 0 : undefined,
+      title: clickable ? props.title || '更换图标' : undefined,
+      onClick: clickable
+        ? function onClick(event) {
+            event.stopPropagation()
+            props.onClick(event)
+          }
+        : undefined,
+      onKeyDown: clickable
+        ? function onKeyDown(event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              props.onClick(event)
+            }
+          }
+        : undefined,
       style: {
         width: size,
         height: size,
@@ -21187,8 +21318,9 @@ function HabitIconBadge(props) {
         fontSize: size >= 40 ? 22 : 15,
         lineHeight: 1,
         flex: '0 0 auto',
+        cursor: clickable ? 'pointer' : 'default',
       },
-      'aria-hidden': 'true',
+      'aria-hidden': clickable ? undefined : 'true',
     },
     habitIconFor(habit),
   )
@@ -21560,6 +21692,133 @@ function HabitMenuLayer(props) {
           },
         })
       }),
+    ),
+  )
+}
+
+/* ── M18 图标选择器 ── */
+
+function HabitIconPicker(props) {
+  const picker = props.picker
+  if (!picker) return null
+  const width = 360
+  const height = 300
+  const left = Math.max(8, Math.min(Number(picker.x) || 0, window.innerWidth - width - 12))
+  const top = Math.max(8, Math.min(Number(picker.y) || 0, window.innerHeight - height - 12))
+  const recent = Array.isArray(picker.recent) ? picker.recent : []
+  const current = String(picker.current || '')
+  function renderIconButton(icon, key) {
+    return h(
+      'button',
+      {
+        key: key,
+        type: 'button',
+        title: icon,
+        onClick: function onPickIcon(event) {
+          event.stopPropagation()
+          props.onPick(icon)
+        },
+        style: {
+          width: 32,
+          height: 32,
+          fontSize: 17,
+          lineHeight: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: V2_T.radius.sm,
+          border: icon === current ? '1px solid ' + V2_T.accent.base : '1px solid transparent',
+          background: icon === current ? V2_T.accent.soft : 'transparent',
+          cursor: 'pointer',
+        },
+      },
+      icon,
+    )
+  }
+  return h(
+    'div',
+    {
+      onMouseDown: function onBackdrop() {
+        props.onClose()
+      },
+      style: { position: 'fixed', inset: 0, zIndex: 50 },
+    },
+    h(
+      'div',
+      {
+        onMouseDown: function stop(event) {
+          event.stopPropagation()
+        },
+        style: {
+          position: 'absolute',
+          left: left,
+          top: top,
+          width: width,
+          background: V2_T.surface.panel2,
+          border: '1px solid ' + V2_T.border.subtle,
+          borderRadius: V2_T.radius.md,
+          padding: 10,
+          boxShadow: V2_T.shadow.raised,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          boxSizing: 'border-box',
+        },
+      },
+      h(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+        h(
+          'span',
+          { style: { fontSize: v2fs(V2_T.font.caption), fontWeight: 600, color: V2_T.text.secondary } },
+          '选择图标',
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            onClick: function onReset() {
+              props.onPick(null)
+            },
+            style: v2BtnStyle('soft', {
+              marginLeft: 'auto',
+              height: 22,
+              padding: '0 8px',
+              borderRadius: V2_T.radius.sm,
+              fontSize: v2fs(V2_T.font.caption),
+              background: 'transparent',
+              color: V2_T.text.tertiary,
+            }),
+          },
+          '按名称推导',
+        ),
+      ),
+      recent.length
+        ? h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+            h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, '最近使用'),
+            h(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', gap: 2 } },
+              recent.map(function renderRecent(icon, index) {
+                return renderIconButton(icon, 'recent-' + index)
+              }),
+            ),
+          )
+        : null,
+      h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 4, minHeight: 0 } },
+        h('span', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary } }, '常用'),
+        h(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: 'repeat(10, 32px)', gap: 2, justifyContent: 'space-between' } },
+          HABIT_ICON_MATRIX.map(function renderMatrix(icon) {
+            return renderIconButton(icon, 'matrix-' + icon)
+          }),
+        ),
+      ),
     ),
   )
 }
@@ -22111,6 +22370,7 @@ function HabitRowV2(props) {
   const [hover, setHover] = useState(false)
   const habit = props.habit
   if (!habit) return null
+  const renaming = props.renaming === true
   const checkin = props.checkin || null
   const statsItem = props.statsItem || null
   const status = checkin ? checkin.status : ''
@@ -22141,6 +22401,13 @@ function HabitRowV2(props) {
           props.onSelect()
         }
       },
+      draggable: renaming ? false : true,
+      onDragStart: function onDragStart(event) {
+        if (typeof props.onDragStart === 'function') props.onDragStart(event)
+      },
+      onDragEnd: function onDragEnd(event) {
+        if (typeof props.onDragEnd === 'function') props.onDragEnd(event)
+      },
       onMouseEnter: function onEnter() {
         setHover(true)
       },
@@ -22160,28 +22427,84 @@ function HabitRowV2(props) {
         boxShadow: props.selected ? 'inset 2px 0 0 ' + V2_T.accent.base : 'none',
       },
     },
-    h(HabitIconBadge, { habit: habit, size: 30, active: props.selected === true }),
+    h(HabitIconBadge, {
+      habit: habit,
+      size: 30,
+      active: props.selected === true,
+      title: '点击更换图标',
+      onClick: function onClick(event) {
+        event.stopPropagation()
+        props.onIconClick(event)
+      },
+    }),
     h(
       'div',
       { style: { flex: '1 1 auto', minWidth: 0 } },
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 } },
-        h(
-          'span',
-          {
+        renaming
+            ? h('input', {
+            type: 'text',
+            value: props.renameValue || '',
+            autoFocus: true,
+            maxLength: 60,
+            'aria-label': '习惯标题',
+            onClick: function onInputClick(event) {
+              event.stopPropagation()
+            },
+            onInput: function onInput(event) {
+              props.onRenameChange(event.target.value)
+            },
+            onBlur: function onBlur() {
+              props.onRenameCommit()
+            },
+            onKeyDown: function onInputKeyDown(event) {
+              event.stopPropagation()
+              if (event.key === 'Enter') {
+                  event.preventDefault()
+                  props.onRenameCommit()
+              } else if (event.key === 'Escape') {
+                  event.preventDefault()
+                  props.onRenameCancel()
+              }
+            },
             style: {
+              flex: '0 1 auto',
+              minWidth: 0,
+              width: 150,
+              height: 22,
+              padding: '0 6px',
               fontSize: v2fs(13.5),
               fontWeight: 600,
               color: V2_T.text.primary,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              lineHeight: '18px',
+              background: V2_T.surface.app,
+              border: '1px solid ' + V2_T.accent.line,
+              borderRadius: V2_T.radius.sm,
+              outline: 'none',
+              boxSizing: 'border-box',
             },
-          },
-          habit.name,
-        ),
+          })
+          : h(
+            'span',
+            {
+              title: '双击重命名',
+              onDoubleClick: function onTitleDoubleClick(event) {
+                    event.stopPropagation()
+                    if (typeof props.onStartRename === 'function') props.onStartRename()
+              },
+              style: {
+                      fontSize: v2fs(13.5),
+                      fontWeight: 600,
+                      color: V2_T.text.primary,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      lineHeight: '18px',
+              },
+            },
+            habit.name,
+          ),
         props.paused ? h('span', { style: habitChipStyle('faint', false) }, '已暂停') : null,
         status === 'skipped' ? h('span', { style: habitChipStyle('faint') }, '跳过') : null,
         status === 'not_done' ? h('span', { style: habitChipStyle('danger') }, '未完成') : null,
@@ -22396,6 +22719,7 @@ function HabitTabV2(props) {
       stats: {},
       checkins: {},
       months: {},
+      groups: [],
       selectedId: (saved && saved.selectedId) || null,
       collapsed: (saved && saved.collapsed) || { plan: false, flex: false, paused: true },
       busyKey: null,
@@ -22403,6 +22727,11 @@ function HabitTabV2(props) {
       confirmDialog: null,
       editor: null,
       logEditor: null,
+      iconPicker: null,
+      renaming: null,
+      groupRename: null,
+      dragHabitId: null,
+      dragGroupId: null,
     }
   })
   const stateRef = useRef(state)
@@ -22456,6 +22785,7 @@ function HabitTabV2(props) {
       const listPayload = await apiRequest('/habits')
       const habits = listPayload && Array.isArray(listPayload.items) ? listPayload.items : []
       const today = (listPayload && listPayload.today) || habitToday()
+      const groups = await habitFetchGroups()
       const statsMap = (await habitFetchStatsMap()) || stateRef.current.stats || {}
       const checkins = {}
       const visible = habits.filter(function keep(habit) {
@@ -22489,6 +22819,8 @@ function HabitTabV2(props) {
         stats: statsMap,
         checkins: checkins,
         months: months,
+        groups: groups || stateRef.current.groups,
+        collapsed: habitCollapsedWith(stateRef.current.collapsed, groups || stateRef.current.groups),
         selectedId: selectedId,
       })
     } catch (error) {
@@ -22502,6 +22834,7 @@ function HabitTabV2(props) {
       const habits = listPayload && Array.isArray(listPayload.items) ? listPayload.items : stateRef.current.habits
       const today = (listPayload && listPayload.today) || stateRef.current.today
       const statsMap = (await habitFetchStatsMap()) || stateRef.current.stats
+      const groups = (await habitFetchGroups()) || stateRef.current.groups
       const checkins = Object.assign({}, stateRef.current.checkins)
       if (habitId) {
         const items = await habitFetchCheckins(habitId)
@@ -22517,10 +22850,371 @@ function HabitTabV2(props) {
         const payload = await habitFetchMonth(needed)
         if (payload) months[needed] = payload
       }
-      update({ today: today, habits: habits, stats: statsMap, checkins: checkins, months: months })
+      update({ today: today, habits: habits, stats: statsMap, checkins: checkins, months: months, groups: groups || stateRef.current.groups, collapsed: habitCollapsedWith(stateRef.current.collapsed, groups || stateRef.current.groups) })
     } catch (error) {
       toast('error', '刷新失败：' + habitErrorHint(error))
     }
+  }
+
+  /* ── M18 图标 / 标题 / 分组写入 ── */
+
+  function patchHabitLocal(habitId, patch) {
+    const habits = stateRef.current.habits.map(function each(item) {
+      return item && item.id === habitId ? Object.assign({}, item, patch) : item
+    })
+    update({ habits: habits })
+  }
+
+  async function saveHabitIcon(habit, icon) {
+    const nextIcon = icon === null || icon === undefined || String(icon).trim() === '' ? null : String(icon).trim()
+    update({ iconPicker: null })
+    patchHabitLocal(habit.id, { icon: nextIcon })
+    if (nextIcon) habitRememberIcon(nextIcon)
+    try {
+      await habitApiSend('PATCH', '/habits/' + encodeURIComponent(habit.id), {
+        patch: { icon: nextIcon },
+        expectedRev: habit.rev,
+      })
+      toast('success', nextIcon ? '图标已更新' : '已恢复按名称推导图标')
+      refreshAfterMutation(habit.id, [])
+    } catch (error) {
+      toast('error', '图标保存失败：' + habitErrorHint(error))
+      refreshAfterMutation(habit.id, [])
+    }
+  }
+
+  function openIconPicker(event, habit) {
+    let x = 0
+    let y = 0
+    if (event && event.currentTarget && typeof event.currentTarget.getBoundingClientRect === 'function') {
+      const rect = event.currentTarget.getBoundingClientRect()
+      x = rect.left
+      y = rect.bottom + 6
+    }
+    update({
+      iconPicker: {
+        habitId: habit.id,
+        x: x,
+        y: y,
+        current: typeof habit.icon === 'string' ? habit.icon : habitIconFor(habit),
+        recent: habitReadRecentIcons(),
+      },
+    })
+  }
+
+  function startHabitRename(habit) {
+    update({ renaming: { habitId: habit.id, value: habit.name || '' } })
+  }
+
+  async function commitHabitRename() {
+    const renaming = stateRef.current.renaming
+    if (!renaming) return
+    const habit = findHabit(renaming.habitId)
+    const name = String(renaming.value || '').trim()
+    if (!habit) {
+      update({ renaming: null })
+      return
+    }
+    if (!name) {
+      toast('error', '习惯标题不能为空')
+      return
+    }
+    if (name === habit.name) {
+      update({ renaming: null })
+      return
+    }
+    update({ renaming: null })
+    patchHabitLocal(habit.id, { name: name })
+    try {
+      await habitApiSend('PATCH', '/habits/' + encodeURIComponent(habit.id), {
+        patch: { name: name },
+        expectedRev: habit.rev,
+      })
+      toast('success', '标题已更新')
+      refreshAfterMutation(habit.id, [])
+    } catch (error) {
+      toast('error', '标题保存失败：' + habitErrorHint(error))
+      refreshAfterMutation(habit.id, [])
+    }
+  }
+
+  function cancelHabitRename() {
+    update({ renaming: null })
+  }
+
+  async function moveHabitToGroup(habit, groupId) {
+    const current = habitGroupIdOf(habit)
+    const nextGroup = groupId || null
+    if (current === nextGroup) return
+    const nextSort = habitNextSortOrder(stateRef.current.habits, nextGroup)
+    update({ dragHabitId: null })
+    patchHabitLocal(habit.id, { group_id: nextGroup, sort_order: nextSort })
+    try {
+      await habitApiSend('PATCH', '/habits/' + encodeURIComponent(habit.id), {
+        patch: { group_id: nextGroup, sort_order: nextSort },
+        expectedRev: habit.rev,
+      })
+      const groups = stateRef.current.groups
+      toast('success', groupId ? '已移入「' + habitGroupNameOf(groups, groupId) + '」' : '已移出分组')
+      refreshAfterMutation(habit.id, [])
+    } catch (error) {
+      toast('error', '移动失败：' + habitErrorHint(error))
+      refreshAfterMutation(habit.id, [])
+    }
+  }
+
+  /* 习惯拖到另一行：按落点前/后插入目标分组，重排 sort_order（跨组时同时改 group_id）。 */
+  async function reorderHabitRelative(draggedId, targetId, after) {
+    const dragged = findHabit(draggedId)
+    const target = findHabit(targetId)
+    if (!dragged || !target || dragged.id === target.id) return
+    const targetGroup = habitGroupIdOf(target)
+    const sameGroup = habitGroupIdOf(dragged) === targetGroup
+    const scope = stateRef.current.habits
+      .filter(function pick(habit) {
+        return habit && habit.status !== 'archived' && habitGroupIdOf(habit) === targetGroup && habit.id !== dragged.id
+      })
+      .sort(function order(a, b) {
+        const left = Number(a.sort_order) || 0
+        const right = Number(b.sort_order) || 0
+        if (left !== right) return left - right
+        return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN')
+      })
+    const index = scope.findIndex(function find(habit) {
+      return habit.id === target.id
+    })
+    if (index < 0) return
+    scope.splice(after ? index + 1 : index, 0, dragged)
+    const changes = []
+    scope.forEach(function assign(habit, position) {
+      const nextSort = (position + 1) * 10
+      const movesGroup = habit.id === dragged.id && !sameGroup
+      if (movesGroup || Number(habit.sort_order) !== nextSort) {
+        changes.push({ habit: habit, sort: nextSort, movesGroup: movesGroup })
+      }
+    })
+    update({ dragHabitId: null })
+    if (!changes.length) return
+    const byId = {}
+    changes.forEach(function index(change) {
+      byId[change.habit.id] = change
+    })
+    const optimistic = stateRef.current.habits.map(function each(habit) {
+      const change = habit && byId[habit.id]
+      if (!change) return habit
+      return Object.assign({}, habit, {
+        sort_order: change.sort,
+        group_id: change.movesGroup ? targetGroup : habit.group_id,
+      })
+    })
+    update({ habits: optimistic })
+    try {
+      let pending = changes.slice()
+      while (pending.length) {
+        const change = pending.shift()
+        const patch = { sort_order: change.sort }
+        if (change.movesGroup) patch.group_id = targetGroup
+        await habitApiSend('PATCH', '/habits/' + encodeURIComponent(change.habit.id), {
+          patch: patch,
+          expectedRev: change.habit.rev,
+        })
+      }
+      if (!sameGroup) {
+        toast('success', targetGroup ? '已移入「' + habitGroupNameOf(stateRef.current.groups, targetGroup) + '」' : '已移出分组')
+      }
+    } catch (error) {
+      toast('error', '排序失败：' + habitErrorHint(error))
+    }
+    refreshAfterMutation(dragged.id, [])
+  }
+  async function createHabitGroupInline() {
+    try {
+      const payload = await habitApiSend('POST', '/habit-groups', { name: '新分组' })
+      const group = payload && payload.group ? payload.group : null
+      const groups = await habitFetchGroups()
+      update({
+        groups: groups || stateRef.current.groups,
+        collapsed: Object.assign({}, stateRef.current.collapsed, group ? { [HABIT_GROUP_SECTION_PREFIX + group.id]: false } : {}),
+        groupRename: group ? { groupId: group.id, value: group.name } : null,
+      })
+      if (group) toast('success', '已新建分组，输入名称后回车保存')
+    } catch (error) {
+      toast('error', '新建分组失败：' + habitErrorHint(error))
+    }
+  }
+
+  function startGroupRename(group) {
+    update({ groupRename: { groupId: group.id, value: group.name || '' } })
+  }
+
+  async function commitGroupRename() {
+    const renaming = stateRef.current.groupRename
+    if (!renaming) return
+    const groups = stateRef.current.groups
+    const group = groups.filter(function match(item) {
+      return item && item.id === renaming.groupId
+    })[0]
+    const name = String(renaming.value || '').trim()
+    if (!group) {
+      update({ groupRename: null })
+      return
+    }
+    if (!name) {
+      toast('error', '分组名称不能为空')
+      return
+    }
+    if (name === group.name) {
+      update({ groupRename: null })
+      return
+    }
+    update({ groupRename: null })
+    const next = groups.map(function each(item) {
+      return item && item.id === group.id ? Object.assign({}, item, { name: name }) : item
+    })
+    update({ groups: next })
+    try {
+      await habitApiSend('PATCH', '/habit-groups/' + encodeURIComponent(group.id), {
+        patch: { name: name },
+        expectedRev: group.rev,
+      })
+      toast('success', '分组已重命名')
+      refreshAfterMutation(null, [])
+    } catch (error) {
+      toast('error', '重命名失败：' + habitErrorHint(error))
+      refreshAfterMutation(null, [])
+    }
+  }
+
+  function cancelGroupRename() {
+    update({ groupRename: null })
+  }
+
+  async function toggleGroupCollapsed(group) {
+    const key = HABIT_GROUP_SECTION_PREFIX + group.id
+    const collapsed = Object.assign({}, stateRef.current.collapsed)
+    const next = collapsed[key] !== true
+    collapsed[key] = next
+    update({ collapsed: collapsed })
+    try {
+      await habitApiSend('PATCH', '/habit-groups/' + encodeURIComponent(group.id), {
+        patch: { collapsed: next },
+        expectedRev: group.rev,
+      })
+    } catch (error) {
+      /* 折叠状态失败不打断操作，下次刷新回正 */
+    }
+  }
+
+  function askDeleteGroup(group) {
+    const members = stateRef.current.habits.filter(function belongs(habit) {
+      return habitGroupIdOf(habit) === group.id
+    })
+    update({
+      confirmDialog: {
+        title: '删除分组',
+        body:
+          '确定删除分组「' +
+          group.name +
+          '」？' +
+          (members.length ? '组内 ' + members.length + ' 个习惯会移回「未分组」，打卡记录不受影响。' : '该分组目前没有习惯。'),
+        confirmLabel: '删除分组',
+        danger: true,
+        onConfirm: function onConfirm() {
+          deleteGroupConfirmed(group)
+        },
+      },
+    })
+  }
+
+  async function deleteGroupConfirmed(group) {
+    update({ confirmDialog: null })
+    try {
+      await habitApiSend('DELETE', '/habit-groups/' + encodeURIComponent(group.id), { expectedRev: group.rev })
+      toast('success', '分组已删除，组内习惯已移回「未分组」')
+      refreshAfterMutation(null, [])
+    } catch (error) {
+      toast('error', '删除分组失败：' + habitErrorHint(error))
+      refreshAfterMutation(null, [])
+    }
+  }
+
+  async function reorderGroups(draggedId, targetId, after) {
+    if (!draggedId || !targetId || draggedId === targetId) return
+    const groups = habitSortGroups(stateRef.current.groups)
+    const ids = groups.map(function idOf(group) {
+      return group.id
+    })
+    const from = ids.indexOf(draggedId)
+    if (from < 0 || ids.indexOf(targetId) < 0) return
+    ids.splice(from, 1)
+    const targetIndex = ids.indexOf(targetId)
+    ids.splice(targetIndex < 0 ? ids.length : targetIndex + (after ? 1 : 0), 0, draggedId)
+    const byId = {}
+    groups.forEach(function each(group) {
+      byId[group.id] = group
+    })
+    const optimistic = ids.map(function pick(id) {
+      return byId[id]
+    })
+    update({ groups: optimistic, dragGroupId: null })
+    try {
+      await habitApiSend('POST', '/habit-groups/reorder', { ids: ids })
+      toast('success', '已调整分组顺序')
+      refreshAfterMutation(null, [])
+    } catch (error) {
+      toast('error', '排序失败：' + habitErrorHint(error))
+      refreshAfterMutation(null, [])
+    }
+  }
+
+  function startHabitDrag(event, habit) {
+    update({ dragHabitId: habit.id })
+    try {
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', habit.id)
+    } catch (error) {
+      /* ignore */
+    }
+  }
+
+  function endHabitDrag() {
+    update({ dragHabitId: null })
+  }
+
+  function startGroupDrag(event, group) {
+    update({ dragGroupId: group.id })
+    try {
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', group.id)
+    } catch (error) {
+      /* ignore */
+    }
+  }
+
+  function dropOnGroup(event, group) {
+    event.preventDefault()
+    event.stopPropagation()
+    const habitId = stateRef.current.dragHabitId
+    if (habitId) {
+      const habit = findHabit(habitId)
+      if (habit) moveHabitToGroup(habit, group ? group.id : null)
+      return
+    }
+    const groupId = stateRef.current.dragGroupId
+    if (groupId && group) {
+      const rect = event.currentTarget.getBoundingClientRect()
+      const after = event.clientY > rect.top + rect.height / 2
+      reorderGroups(groupId, group.id, after)
+    }
+  }
+
+  function dropOnGroupList(event, group) {
+    event.preventDefault()
+    event.stopPropagation()
+    const habitId = stateRef.current.dragHabitId
+    if (!habitId) return
+    const habit = findHabit(habitId)
+    if (habit) moveHabitToGroup(habit, group ? group.id : null)
   }
 
   useEffect(function onMount() {
@@ -23207,6 +23901,24 @@ function HabitTabV2(props) {
         'button',
         {
           type: 'button',
+          title: '新建分组',
+          onClick: function onCreateGroup() {
+            createHabitGroupInline()
+          },
+          onMouseEnter: function onGroupEnter(event) {
+            event.currentTarget.style.background = V2_T.surface.panel2
+          },
+          onMouseLeave: function onGroupLeave(event) {
+            event.currentTarget.style.background = 'transparent'
+          },
+          style: habitIconButtonStyle({ width: 28, height: 28, minWidth: 28, borderRadius: V2_T.radius.sm }),
+        },
+        h(V2Icon, { name: 'folder', size: 14 }),
+      ),
+      h(
+        'button',
+        {
+          type: 'button',
           title: '新建习惯',
           onClick: openCreateEditor,
           onMouseEnter: function onNewEnter(event) {
@@ -23287,7 +23999,7 @@ function HabitTabV2(props) {
     const paused = habitPausedOn(habit, state.date) || habit.status === 'paused'
     const hint = dateWindowHint(state.date)
     const key = 'check|' + habit.id + '|' + state.date
-    return h(HabitRowV2, {
+    const row = h(HabitRowV2, {
       key: habit.id,
       habit: habit,
       checkin: checkin,
@@ -23297,6 +24009,26 @@ function HabitTabV2(props) {
       disabled: paused || hint !== '',
       disabledHint: paused ? '习惯已暂停' : hint,
       busy: state.busyKey === key,
+      renaming: !!state.renaming && state.renaming.habitId === habit.id,
+      renameValue: state.renaming && state.renaming.habitId === habit.id ? state.renaming.value : '',
+      onStartRename: function onStartRename() {
+        startHabitRename(habit)
+      },
+      onRenameChange: function onRenameChange(value) {
+        update({ renaming: { habitId: habit.id, value: value } })
+      },
+      onRenameCommit: function onRenameCommit() {
+        commitHabitRename()
+      },
+      onRenameCancel: function onRenameCancel() {
+        cancelHabitRename()
+      },
+      onDragStart: function onDragStart(event) {
+        startHabitDrag(event, habit)
+      },
+      onDragEnd: function onDragEnd() {
+        endHabitDrag()
+      },
       onSelect: function onSelect() {
         selectHabit(habit.id)
       },
@@ -23309,15 +24041,57 @@ function HabitTabV2(props) {
       onMenu: function onMenu(event) {
         openMenuAt(event, rowMenuItems(habit))
       },
+      onIconClick: function onIconClick(event) {
+        openIconPicker(event, habit)
+      },
     })
-  }
-
-  function renderHabitSection(title, key, list, emptyHint) {
-    const collapsed = state.collapsed[key] === true
-    if (!list.length && !emptyHint) return null
     return h(
       'div',
-      { style: { marginTop: 12 } },
+      {
+        key: 'row|' + habit.id,
+        onDragOver: function onDragOver(event) {
+          if (!stateRef.current.dragHabitId) return
+          event.preventDefault()
+        },
+        onDrop: function onDrop(event) {
+          const draggedId = stateRef.current.dragHabitId
+          if (!draggedId) return
+          event.preventDefault()
+          event.stopPropagation()
+          const rect = event.currentTarget.getBoundingClientRect()
+          const after = event.clientY > rect.top + rect.height / 2
+          reorderHabitRelative(draggedId, habit.id, after)
+        },
+      },
+      row,
+    )
+  }
+
+  function renderHabitSection(title, key, list, emptyHint, options) {
+    const collapsed = state.collapsed[key] === true
+    const opts = options || {}
+    if (!list.length && !emptyHint) return null
+    const wrapperProps = { style: { marginTop: 12 } }
+    if (opts.dropGroup) {
+      wrapperProps.onDragOver = function onDragOver(event) {
+        if (!stateRef.current.dragHabitId && !stateRef.current.dragGroupId) return
+        event.preventDefault()
+      }
+      wrapperProps.onDrop = function onDrop(event) {
+        dropOnGroup(event, opts.dropGroup)
+      }
+    } else if (opts.dropUngrouped) {
+      wrapperProps.onDragOver = function onDragOver(event) {
+        if (!stateRef.current.dragHabitId) return
+        event.preventDefault()
+      }
+      wrapperProps.onDrop = function onDrop(event) {
+        dropOnGroupList(event, null)
+      }
+    }
+    return h(
+      'div',
+      wrapperProps,
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 12px 4px 6px' } },
@@ -23360,6 +24134,212 @@ function HabitTabV2(props) {
               return renderHabitRow(habit)
             })
           : h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, padding: '2px 12px 8px' } }, emptyHint),
+    )
+  }
+
+  function renderHabitRows(list) {
+    const planRows = []
+    const flexRows = []
+    list.forEach(function split(habit) {
+      if (habitPlanDay(habit, state.date)) planRows.push(habit)
+      else flexRows.push(habit)
+    })
+    const nodes = planRows.map(function each(habit) {
+      return renderHabitRow(habit)
+    })
+    if (flexRows.length) {
+      if (planRows.length) {
+        nodes.push(
+          h(
+            'div',
+            {
+              key: 'flex-label',
+              style: {
+                fontSize: v2fs(V2_T.font.caption),
+                color: V2_T.text.tertiary,
+                padding: '6px 12px 2px',
+                lineHeight: '16px',
+              },
+            },
+            '灵活打卡',
+          ),
+        )
+      }
+      flexRows.forEach(function each(habit) {
+        nodes.push(renderHabitRow(habit))
+      })
+    }
+    return nodes
+  }
+
+  function openGroupMenu(event, group) {
+    const members = stateRef.current.habits.filter(function sameGroup(habit) {
+      return habitGroupIdOf(habit) === group.id && !habit.deleted_at
+    })
+    openMenuAt(event, [
+      {
+        label: '重命名分组',
+        icon: 'edit',
+        onClick: function onClick() {
+          startGroupRename(group)
+        },
+      },
+      {
+        label: '删除分组',
+        icon: 'trash',
+        danger: true,
+        onClick: function onClick() {
+          askDeleteGroup(group)
+        },
+      },
+      members.length
+        ? {
+            label: '移出全部 ' + members.length + ' 个习惯',
+            icon: 'move',
+            onClick: function onClick() {
+              members.forEach(function each(habit) {
+                moveHabitToGroup(habit, null)
+              })
+            },
+          }
+        : null,
+    ].filter(Boolean))
+  }
+
+  function renderHabitGroupSection(group, list) {
+    const key = HABIT_GROUP_SECTION_PREFIX + group.id
+    const collapsed = state.collapsed[key] === true
+    const renaming = !!state.groupRename && state.groupRename.groupId === group.id
+    const dragOver = function dragOver(event) {
+      if (!stateRef.current.dragHabitId && !stateRef.current.dragGroupId) return
+      event.preventDefault()
+    }
+    const drop = function drop(event) {
+      dropOnGroup(event, group)
+    }
+    return h(
+      'div',
+      {
+        key: 'group|' + group.id,
+        style: { marginTop: 12 },
+        onDragOver: dragOver,
+        onDrop: drop,
+      },
+      h(
+        'div',
+        {
+          draggable: renaming ? false : true,
+          onDragStart: function onDragStart(event) {
+            if (renaming) return
+            startGroupDrag(event, group)
+          },
+          onDragEnd: function onDragEnd() {
+            endHabitDrag()
+          },
+          style: { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 12px 4px 6px', cursor: renaming ? 'default' : 'grab' },
+        },
+        h(
+          'button',
+          {
+            type: 'button',
+            title: collapsed ? '展开分组' : '折叠分组',
+            onClick: function onToggle() {
+              toggleGroupCollapsed(group)
+            },
+            style: habitIconButtonStyle({ width: 20, height: 20, minWidth: 20 }),
+          },
+          h(V2Icon, { name: collapsed ? 'chev' : 'chevD', size: 12 }),
+        ),
+        renaming
+          ? h('input', {
+              value: state.groupRename.value,
+              autoFocus: true,
+              maxLength: HABIT_GROUP_NAME_MAX,
+              onInput: function onInput(event) {
+                update({ groupRename: { groupId: group.id, value: event.target.value } })
+              },
+              onBlur: function onBlur() {
+                commitGroupRename()
+              },
+              onKeyDown: function onKeyDown(event) {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  commitGroupRename()
+                } else if (event.key === 'Escape') {
+                  event.preventDefault()
+                  cancelGroupRename()
+                }
+              },
+              style: habitInputStyle({ fontSize: v2fs(V2_T.font.caption), fontWeight: 600, height: 22, flex: '1 1 auto', minWidth: 0 }),
+            })
+          : h(
+              'span',
+              {
+                title: '双击重命名分组',
+                onDoubleClick: function onDoubleClick() {
+                  startGroupRename(group)
+                },
+                style: {
+                  fontSize: v2fs(V2_T.font.caption),
+                  fontWeight: 600,
+                  color: V2_T.text.tertiary,
+                  letterSpacing: '0.02em',
+                  lineHeight: '16px',
+                  flex: '1 1 auto',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                },
+              },
+              group.name,
+            ),
+        h(
+          'span',
+          { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, lineHeight: '16px' } },
+          String(list.length),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            title: '分组操作',
+            onClick: function onClick(event) {
+              event.stopPropagation()
+              openGroupMenu(event, group)
+            },
+            style: habitIconButtonStyle({ width: 22, height: 22, minWidth: 22, opacity: 0.6 }),
+          },
+          h(V2Icon, { name: 'more', size: 13 }),
+        ),
+      ),
+      collapsed
+        ? null
+        : list.length
+          ? h(
+              'div',
+              {
+                style: { display: 'flex', flexDirection: 'column', gap: 2 },
+                onDragOver: dragOver,
+                onDrop: drop,
+              },
+              renderHabitRows(list),
+            )
+          : h(
+              'div',
+              {
+                style: {
+                  margin: '2px 8px 4px',
+                  padding: '10px 12px',
+                  borderRadius: V2_T.radius.sm,
+                  border: '1px dashed ' + V2_T.border.subtle,
+                  fontSize: v2fs(V2_T.font.caption),
+                  color: V2_T.text.tertiary,
+                  lineHeight: '16px',
+                },
+              },
+              '把习惯拖到这里',
+            ),
     )
   }
 
@@ -23461,16 +24441,26 @@ function HabitTabV2(props) {
         ),
       )
     }
-    const planList = []
-    const flexList = []
     const pausedList = []
+    const ungroupedList = []
+    const byGroup = {}
+    const groups = habitSortGroups(state.groups)
+    const knownGroups = {}
+    groups.forEach(function each(group) {
+      knownGroups[group.id] = true
+    })
     visible.forEach(function split(habit) {
       if (habitPausedOn(habit, state.date) || habit.status === 'paused') {
         pausedList.push(habit)
         return
       }
-      if (habitPlanDay(habit, state.date)) planList.push(habit)
-      else flexList.push(habit)
+      const groupId = habitGroupIdOf(habit)
+      if (groupId && knownGroups[groupId]) {
+        if (!byGroup[groupId]) byGroup[groupId] = []
+        byGroup[groupId].push(habit)
+      } else {
+        ungroupedList.push(habit)
+      }
     })
     const sortByName = function sortByName(left, right) {
       const leftOrder = Number(left.sort_order || 0)
@@ -23478,9 +24468,11 @@ function HabitTabV2(props) {
       if (leftOrder !== rightOrder) return leftOrder - rightOrder
       return String(left.name || '').localeCompare(String(right.name || ''))
     }
-    planList.sort(sortByName)
-    flexList.sort(sortByName)
     pausedList.sort(sortByName)
+    ungroupedList.sort(sortByName)
+    groups.forEach(function each(group) {
+      if (byGroup[group.id]) byGroup[group.id].sort(sortByName)
+    })
     const showPaused = v2ReadSettings().habitShowPaused !== false
     return h(
       'div',
@@ -23488,8 +24480,16 @@ function HabitTabV2(props) {
       state.error
         ? h('div', { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.status.danger, padding: '4px 12px', lineHeight: '16px' } }, state.error)
         : null,
-      renderHabitSection('当日计划', 'plan', planList, state.date === state.today ? '今天没有计划中的习惯' : '这一天没有计划中的习惯'),
-      renderHabitSection('灵活打卡', 'flex', flexList, ''),
+      groups.map(function each(group) {
+        return renderHabitGroupSection(group, byGroup[group.id] || [])
+      }),
+      renderHabitSection(
+        groups.length ? '未分组' : '全部习惯',
+        HABIT_UNGROUPED_KEY,
+        ungroupedList,
+        groups.length ? '把习惯拖到这里，即可移出分组' : '',
+        { dropUngrouped: true },
+      ),
       showPaused ? renderHabitSection('已暂停', 'paused', pausedList, '') : null,
     )
   }
@@ -23696,7 +24696,15 @@ function HabitTabV2(props) {
                   h(V2Icon, { name: 'back', size: 16 }),
                 )
               : null,
-            h(HabitIconBadge, { habit: habit, size: 44, active: false }),
+            h(HabitIconBadge, {
+              habit: habit,
+              size: 44,
+              active: false,
+              title: '点击更换图标',
+              onClick: function onClick(event) {
+                openIconPicker(event, habit)
+              },
+            }),
             h(
               'div',
               { style: { flex: '1 1 auto', minWidth: 0 } },
@@ -24167,14 +25175,14 @@ function HabitTabV2(props) {
               renderInfoRow('提醒', habit.time_hint || '—'),
               renderInfoRow('创建时间', habitFormatDateTime(habit.created_at) || '—'),
               renderInfoRow('更新时间', habitFormatDateTime(habit.updated_at) || '—'),
-              renderInfoRow('图标', '按名称自动推导'),
-              renderInfoRow('分组', 'Host 无分组字段'),
+              renderInfoRow('图标', habit.icon ? habit.icon : '按名称推导'),
+              renderInfoRow('分组', habitGroupNameOf(state.groups, habitGroupIdOf(habit))),
               renderInfoRow('编号', habit.id),
             ),
             h(
               'div',
               { style: { fontSize: v2fs(V2_T.font.caption), color: V2_T.text.tertiary, marginTop: 8, lineHeight: '16px' } },
-              'Host 目前不提供 icon / group 字段：图标按名称推导，列表按「当日计划 / 灵活打卡 / 已暂停」自动分组。',
+              '点图标可更换 emoji，双击标题可重命名；拖住习惯行可移入其它分组，拖住分组标题可调整分组顺序。',
             ),
           ),
         ),
@@ -24229,6 +25237,22 @@ function HabitTabV2(props) {
       onSave: saveHabitEditor,
       onClose: function onClose() {
         update({ editor: null })
+      },
+    })
+  }
+
+  function renderIconPickLayer() {
+    const picker = state.iconPicker
+    if (!picker) return null
+    const habit = findHabit(picker.habitId)
+    if (!habit) return null
+    return h(HabitIconPicker, {
+      picker: picker,
+      onPick: function onPick(icon) {
+        saveHabitIcon(habit, icon)
+      },
+      onClose: function onClose() {
+        update({ iconPicker: null })
       },
     })
   }
@@ -24305,6 +25329,7 @@ function HabitTabV2(props) {
     renderMenuLayer(),
     renderConfirmLayer(),
     renderEditorLayer(),
+    renderIconPickLayer(),
     renderLogLayer(),
   )
 }

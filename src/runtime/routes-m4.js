@@ -19,6 +19,10 @@ import {
   validateGoalListQuery,
   validateGoalPatch,
   validateHabitCreate,
+  validateHabitGroupCreate,
+  validateHabitGroupId,
+  validateHabitGroupPatch,
+  validateHabitGroupReorder,
   validateHabitId,
   validateHabitListQuery,
   validateHabitMonthQuery,
@@ -306,6 +310,75 @@ export function buildM4Routes(deps) {
         const result = await requireService(service, 'uncheck', '习惯')(args);
         publishChanged(deps, 'habit_checkin', [id], 'uncheck', { localDate });
         return { ok: true, revision: Number.isInteger(result?.revision) ? result.revision : null };
+      },
+    },
+
+    /* ── 习惯分组（M18）────────────────────────────────── */
+    {
+      method: 'GET',
+      pattern: '/habit-groups',
+      handler: async () => ({
+        items: itemsOf(await requireService(service, 'listHabitGroups', '习惯分组')()),
+      }),
+    },
+    {
+      method: 'POST',
+      pattern: '/habit-groups',
+      handler: async (ctx) => {
+        const input = validated(validateHabitGroupCreate(await parseJsonBody(ctx.req)), 'habit_group');
+        const result = withRevision(
+          await requireService(service, 'createHabitGroup', '习惯分组')(input),
+          'group',
+        );
+        publishChanged(deps, 'habit_group', [result.group?.id], 'create');
+        return result;
+      },
+    },
+    {
+      method: 'POST',
+      pattern: '/habit-groups/reorder',
+      handler: async (ctx) => {
+        const input = validated(validateHabitGroupReorder(await parseJsonBody(ctx.req)), 'habit_group_order');
+        const result = await requireService(service, 'reorderHabitGroups', '习惯分组')(input);
+        publishChanged(deps, 'habit_group', input.ids, 'reorder');
+        return { items: itemsOf(result) };
+      },
+    },
+    {
+      method: 'PATCH',
+      pattern: '/habit-groups/:id',
+      handler: async (ctx) => {
+        const id = validated(validateHabitGroupId(ctx.params.id), 'id');
+        const body = await parseJsonBody(ctx.req);
+        const patch = validated(
+          validateHabitGroupPatch(body.patch !== undefined ? body.patch : body),
+          'habit_group',
+        );
+        const expectedRev = requiredRev(ctx.req, body);
+        const result = withRevision(
+          await requireService(service, 'updateHabitGroup', '习惯分组')(id, patch, { expectedRev }),
+          'group',
+        );
+        publishChanged(deps, 'habit_group', [id], 'update');
+        return result;
+      },
+    },
+    {
+      method: 'DELETE',
+      pattern: '/habit-groups/:id',
+      handler: async (ctx) => {
+        const id = validated(validateHabitGroupId(ctx.params.id), 'id');
+        const body = await parseJsonBody(ctx.req);
+        const expectedRev = requiredRev(ctx.req, body);
+        const result = await requireService(service, 'deleteHabitGroup', '习惯分组')(id, { expectedRev });
+        publishChanged(deps, 'habit_group', [id], 'delete', {
+          movedToUngrouped: Array.isArray(result?.movedToUngrouped) ? result.movedToUngrouped : [],
+        });
+        return {
+          ok: true,
+          revision: Number.isInteger(result?.revision) ? result.revision : null,
+          movedToUngrouped: Array.isArray(result?.movedToUngrouped) ? result.movedToUngrouped : [],
+        };
       },
     },
 

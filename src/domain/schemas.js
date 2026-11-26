@@ -201,7 +201,8 @@ const BUSINESS_DEFS = [
     timestamps: ['paused_at', 'resumed_at', 'archived_at'],
     localDates: ['start_date', 'end_date'],
     objects: ['frequency_rule', 'period_rule', 'target_json', 'event_match_json'],
-    types: { name: 'string', time_hint: 'string' },
+    // M18 schema v4：icon 为用户选择的图标（null = 按名称推导）；group_id 指向 habit_group（null = 未分组）。
+    types: { name: 'string', time_hint: 'string', icon: 'string', group_id: 'string' },
   },
   {
     name: 'habit_checkin',
@@ -360,6 +361,17 @@ const BUSINESS_DEFS = [
     defaults: { sort_order: 0, collapsed: false },
     timestamps: ['archived_at'],
     types: { list_id: 'string', name: 'string', color: 'string', sort_order: 'number' },
+    booleans: ['collapsed'],
+  },
+  {
+    // M18 schema v4：习惯一级分组（独立表，不复用任务 list/group；sort_order 手工排序，collapsed 折叠状态）。
+    name: 'habit_group',
+    unit: UNIT.CORE,
+    prefix: 'hgrp',
+    required: ['name'],
+    defaults: { sort_order: 0, collapsed: false },
+    timestamps: ['archived_at'],
+    types: { name: 'string', sort_order: 'number' },
     booleans: ['collapsed'],
   },
   {
@@ -595,7 +607,7 @@ export const TABLE_SPECS = Object.freeze(
   ),
 )
 
-/** 29 张业务表名（不含 journal）；用于建表/统计/测试。 */
+/** 30 张业务表名（不含 journal）；用于建表/统计/测试。 */
 export const BUSINESS_TABLES = Object.freeze(BUSINESS_DEFS.map((d) => d.name))
 
 /** unit → 表名数组（含 journal；表名一次定全）。 */

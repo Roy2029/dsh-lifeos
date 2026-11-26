@@ -63,6 +63,9 @@ const HABIT_FIELD_MAP = Object.freeze({
   sortOrder: 'sort_order',
   event_match_json: 'event_match_json',
   eventMatchJson: 'event_match_json',
+  icon: 'icon',
+  group_id: 'group_id',
+  groupId: 'group_id',
 })
 
 const HABIT_FIELDS = Object.freeze(Object.values(HABIT_FIELD_MAP))
@@ -277,6 +280,8 @@ export function createHabitOps(deps = {}) {
       archived_at: habit.archived_at ?? null,
       time_hint: habit.time_hint ?? null,
       sort_order: habit.sort_order ?? 0,
+      icon: habit.icon ?? null,
+      group_id: habit.group_id ?? null,
       rev: habit.rev ?? 1,
       created_at: habit.created_at ?? null,
       updated_at: habit.updated_at ?? null,
@@ -456,8 +461,270 @@ export function createHabitOps(deps = {}) {
     if (values.sort_order !== undefined && values.sort_order !== null) {
       if (!Number.isInteger(values.sort_order) || values.sort_order < 0) errors.push('sort_order: 必须是 >=0 的整数')
     }
+    if (values.icon !== undefined && values.icon !== null && values.icon !== '') {
+      if (typeof values.icon !== 'string' || values.icon.trim().length === 0) errors.push('icon: 必须是字符串')
+      else if (values.icon.trim().length > 8) errors.push('icon: 超过上限 8 字符')
+    }
+    if (values.group_id !== undefined && values.group_id !== null && values.group_id !== '') {
+      if (typeof values.group_id !== 'string' || !/^hgrp_/.test(values.group_id)) {
+        errors.push('group_id: 必须是 hgrp_ 开头的分组 ID')
+      } else if (!getHabitGroupRecord(values.group_id)) {
+        errors.push('group_id: 分组不存在')
+      }
+    }
     if (errors.length > 0) throw validationError('习惯字段不合法', errors)
     return { values, merged }
+  }
+
+  /* ── 习惯分组（M18，schema v4）──────────────────────────── */
+
+  function allHabitGroups() {
+    return entries('habit_group')
+      .map(([, record]) => record)
+      .filter((record) => isPlainObject(record) && !record.deleted_at)
+  }
+
+  function getHabitGroupRecord(id) {
+    if (typeof id !== 'string' || id.length === 0) return null
+    try {
+      const record = store.get(CORE, 'habit_group', id)
+      return record && !record.deleted_at ? record : null
+    } catch {
+      return null
+    }
+  }
+
+  function sortHabitGroups(groups) {
+    return groups
+      .slice()
+      .sort(
+        (a, b) =>
+          (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+          String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
+          String(a.name ?? '').localeCompare(String(b.name ?? '')),
+      )
+  }
+
+  function habitGroupView(group) {
+    return {
+      id: group.id,
+      name: group.name,
+      sort_order: group.sort_order ?? 0,
+      collapsed: group.collapsed === true,
+      rev: group.rev ?? 1,
+      created_at: group.created_at ?? null,
+      updated_at: group.updated_at ?? null,
+    }
+  }
+
+  function requireGroupRev(group, expectedRev, view) {
+    if (group.rev !== expectedRev) {
+      throw new LifeosError('conflict', '习惯分组已被修改，请刷新后重试', {
+        current: view,
+        expectedRev,
+        currentRev: group.rev,
+      })
+    }
+  }
+
+  function normalizeGroupName(name) {
+    if (typeof name !== 'string' || name.trim().length === 0) return null
+    const trimmed = name.trim()
+    return trimmed.length > 40 ? null : trimmed
+  }
+
+  function listHabitGroups() {
+    return { items: sortHabitGroups(allHabitGroups()).map(habitGroupView) }
+  }
+
+  function createHabitGroup(input = {}) {
+    assertWritable()
+    const source = isPlainObject(input) ? input : {}
+    const name = normalizeGroupName(source.name)
+    const errors = []
+    if (!name) errors.push('name 必填且不超过 40 字')
+    if (source.sort_order !== undefined && source.sort_order !== null) {
+      if (!Number.isInteger(source.sort_order) || source.sort_order < 0) errors.push('sort_order: 必须是 >=0 的整数')
+    }
+    if (source.collapsed !== undefined && source.collapsed !== null && typeof source.collapsed !== 'boolean') {
+      errors.push('collapsed: 必须是布尔值')
+    }
+    if (errors.length > 0) throw validationError('习惯分组字段不合法', errors)
+    const nowIso = currentIso()
+    const existing = allHabitGroups()
+    const nextOrder =
+      Number.isInteger(source.sort_order) && source.sort_order >= 0
+        ? source.sort_order
+        : existing.reduce((max, group) => Math.max(max, Number(group.sort_order ?? 0)), -1) + 1
+    const record = {
+      id: newId('hgrp'),
+      name,
+      sort_order: nextOrder,
+      collapsed: source.collapsed === true,
+      created_at: nowIso,
+      updated_at: nowIso,
+      rev: 1,
+      schema_version: 1,
+      deleted_at: null,
+      archived_at: null,
+      origin_type: 'user_stated',
+      origin_ref: null,
+      origin_key: null,
+      confirmation_status: 'not_required',
+      evidence_refs: [],
+      meta_json: null,
+    }
+    const oplog = oplogRecord({
+      action: 'habit_group.create',
+      targetType: 'habit_group',
+      targetId: record.id,
+      targetIds: [record.id],
+      after: habitGroupView(record),
+      nowIso,
+    })
+    return store
+      .transaction([
+        { unit: CORE, table: 'habit_group', key: record.id, value: record },
+        { unit: LOG, table: 'operation_log', key: oplog.id, value: oplog },
+      ])
+      .then(() => {
+        emit('habit_group', [record.id], { action: 'create' })
+        return { group: habitGroupView(record), revision: record.rev }
+      })
+  }
+
+  function updateHabitGroup(id, patch = {}, revInput) {
+    assertWritable()
+    const expectedRev = requireExpectedRev(revInput)
+    const current = getHabitGroupRecord(id)
+    if (!current) throw new LifeosError('not_found', `习惯分组不存在：${id}`, { id })
+    const currentView = habitGroupView(current)
+    requireGroupRev(current, expectedRev, currentView)
+    const source = isPlainObject(patch) ? patch : {}
+    const errors = []
+    const next = { ...current, updated_at: currentIso(), rev: current.rev + 1 }
+    if (source.name !== undefined) {
+      const name = normalizeGroupName(source.name)
+      if (!name) errors.push('name 必填且不超过 40 字')
+      else next.name = name
+    }
+    if (source.sort_order !== undefined) {
+      if (!Number.isInteger(source.sort_order) || source.sort_order < 0) errors.push('sort_order: 必须是 >=0 的整数')
+      else next.sort_order = source.sort_order
+    }
+    if (source.collapsed !== undefined) {
+      if (typeof source.collapsed !== 'boolean') errors.push('collapsed: 必须是布尔值')
+      else next.collapsed = source.collapsed
+    }
+    if (errors.length > 0) throw validationError('习惯分组字段不合法', errors)
+    const changedFields = ['name', 'sort_order', 'collapsed'].filter(
+      (field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(next[field] ?? null),
+    )
+    if (changedFields.length === 0) {
+      return Promise.resolve({ group: currentView, revision: current.rev, diff: [] })
+    }
+    const diffs = diffOf(current, next, changedFields)
+    const changes = stateChangeRecords('habit_group', id, diffs, next.updated_at, next.rev)
+    const oplog = oplogRecord({
+      action: 'habit_group.update',
+      targetType: 'habit_group',
+      targetId: id,
+      targetIds: [id],
+      before: currentView,
+      after: habitGroupView(next),
+      stateChangeIds: changes.map((record) => record.id),
+      nowIso: next.updated_at,
+    })
+    return store
+      .transaction([
+        { unit: CORE, table: 'habit_group', key: id, value: next },
+        ...changes.map((record) => ({ unit: LOG, table: 'state_change', key: record.id, value: record })),
+        { unit: LOG, table: 'operation_log', key: oplog.id, value: oplog },
+      ])
+      .then(() => {
+        emit('habit_group', [id], { action: 'update' })
+        return {
+          group: habitGroupView(next),
+          revision: next.rev,
+          diff: diffs.map((diff) => ({ field: diff.field, oldValue: diff.oldValue, newValue: diff.newValue })),
+        }
+      })
+  }
+
+  /** 删除分组：软删分组 + 组内习惯一律回「未分组」（group_id=null），一次事务。 */
+  function deleteHabitGroup(id, revInput) {
+    assertWritable()
+    const expectedRev = requireExpectedRev(revInput)
+    const current = getHabitGroupRecord(id)
+    if (!current) throw new LifeosError('not_found', `习惯分组不存在：${id}`, { id })
+    const currentView = habitGroupView(current)
+    requireGroupRev(current, expectedRev, currentView)
+    const nowIso = currentIso()
+    const members = allHabits().filter((habit) => habit.group_id === id)
+    const nextGroup = { ...current, deleted_at: nowIso, updated_at: nowIso, rev: current.rev + 1 }
+    const ops = [{ unit: CORE, table: 'habit_group', key: id, value: nextGroup }]
+    const stateChangeOps = []
+    const memberIds = []
+    for (const habit of members) {
+      const next = { ...habit, group_id: null, updated_at: nowIso, rev: habit.rev + 1 }
+      ops.push({ unit: CORE, table: 'habit', key: habit.id, value: next })
+      memberIds.push(habit.id)
+      const changes = stateChangeRecords('habit', habit.id, [{ field: 'group_id', oldValue: id, newValue: null }], nowIso, next.rev)
+      for (const record of changes) stateChangeOps.push({ unit: LOG, table: 'state_change', key: record.id, value: record })
+    }
+    const oplog = oplogRecord({
+      action: 'habit_group.delete',
+      targetType: 'habit_group',
+      targetId: id,
+      targetIds: [id, ...memberIds],
+      before: currentView,
+      after: { id, deleted_at: nowIso, moved_to_ungrouped: memberIds },
+      nowIso,
+    })
+    return store
+      .transaction([...ops, ...stateChangeOps, { unit: LOG, table: 'operation_log', key: oplog.id, value: oplog }])
+      .then(() => {
+        emit('habit_group', [id], { action: 'delete' })
+        if (memberIds.length > 0) emit('habit', memberIds, { action: 'update' })
+        return { deleted: true, id, movedToUngrouped: memberIds, revision: nextGroup.rev }
+      })
+  }
+
+  /** 拖拽排序：ids 为目标顺序，逐个写 sort_order=index；缺 id 报 not_found。 */
+  function reorderHabitGroups(input = {}) {
+    assertWritable()
+    const ids = isPlainObject(input) && Array.isArray(input.ids) ? input.ids : null
+    if (!ids || ids.length === 0) throw validationError('习惯分组排序不合法', ['ids 必须是非空数组'])
+    if (new Set(ids).size !== ids.length) throw validationError('习惯分组排序不合法', ['ids 不能重复'])
+    const current = allHabitGroups()
+    const byId = new Map(current.map((group) => [group.id, group]))
+    const missing = ids.filter((id) => !byId.has(id))
+    if (missing.length > 0) throw new LifeosError('not_found', `习惯分组不存在：${missing[0]}`, { id: missing[0] })
+    const nowIso = currentIso()
+    const ops = []
+    const changed = []
+    ids.forEach((id, index) => {
+      const group = byId.get(id)
+      if (Number(group.sort_order ?? 0) === index) return
+      const next = { ...group, sort_order: index, updated_at: nowIso, rev: group.rev + 1 }
+      ops.push({ unit: CORE, table: 'habit_group', key: id, value: next })
+      changed.push(id)
+    })
+    if (ops.length === 0) {
+      return Promise.resolve({ items: sortHabitGroups(current).map(habitGroupView), revision: null })
+    }
+    const oplog = oplogRecord({
+      action: 'habit_group.reorder',
+      targetType: 'habit_group',
+      targetId: null,
+      targetIds: ids,
+      after: { ids },
+      nowIso,
+    })
+    return store.transaction([...ops, { unit: LOG, table: 'operation_log', key: oplog.id, value: oplog }]).then(() => {
+      emit('habit_group', changed, { action: 'reorder' })
+      return { items: sortHabitGroups(allHabitGroups()).map(habitGroupView), revision: null }
+    })
   }
 
   /* ── 习惯 CRUD ─────────────────────────────────────────── */
@@ -508,6 +775,8 @@ export function createHabitOps(deps = {}) {
       time_hint: values.time_hint ?? null,
       event_match_json: values.event_match_json ?? null,
       sort_order: values.sort_order ?? 0,
+      icon: typeof values.icon === 'string' && values.icon.trim().length > 0 ? values.icon.trim() : null,
+      group_id: typeof values.group_id === 'string' && values.group_id.length > 0 ? values.group_id : null,
       paused_at: null,
       resumed_at: null,
       archived_at: null,
@@ -582,6 +851,13 @@ export function createHabitOps(deps = {}) {
     if (values.event_match_json !== undefined) next.event_match_json = values.event_match_json
     if (values.time_hint !== undefined) next.time_hint = values.time_hint
     if (values.sort_order !== undefined) next.sort_order = values.sort_order
+    if (values.icon !== undefined) {
+      const icon = values.icon === null ? null : String(values.icon).trim()
+      next.icon = icon ? icon : null
+    }
+    if (values.group_id !== undefined) {
+      next.group_id = values.group_id === null || values.group_id === '' ? null : values.group_id
+    }
     if (next.status === 'archived' && current.status !== 'archived') next.archived_at = nowIso
     if (next.status === 'paused' && current.status !== 'paused') next.paused_at = nowIso
     if (next.status === 'active' && current.status === 'paused') next.resumed_at = nowIso
@@ -1040,6 +1316,11 @@ export function createHabitOps(deps = {}) {
     getStats,
     getMonth,
     todayHabits,
+    listHabitGroups,
+    createHabitGroup,
+    updateHabitGroup,
+    deleteHabitGroup,
+    reorderHabitGroups,
   }
 }
 

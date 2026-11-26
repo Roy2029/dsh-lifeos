@@ -2569,8 +2569,23 @@ export function settingsTool(service) {
 //   （getStats/getMonth/todayHabits）保留别名，避免装配层差异导致工具不可用。
 // ════════════════════════════════════════════════════════════════
 
-const HABIT_ACTIONS = ['list', 'get', 'create', 'update', 'checkin', 'uncheck', 'stats', 'month']
-const HABIT_READ_ACTIONS = ['list', 'get', 'stats', 'month']
+const HABIT_ACTIONS = [
+  'list',
+  'get',
+  'create',
+  'update',
+  'checkin',
+  'uncheck',
+  'stats',
+  'month',
+  // M18 习惯分组：习惯的一级分组（habit_group 表）
+  'list_groups',
+  'create_group',
+  'update_group',
+  'delete_group',
+  'reorder_groups',
+]
+const HABIT_READ_ACTIONS = ['list', 'get', 'stats', 'month', 'list_groups']
 const HABIT_CHECKIN_STATUSES = ['done', 'partial', 'skipped', 'not_done']
 const HABIT_STATUSES = ['active', 'paused', 'archived']
 const HABIT_FREQUENCY_KINDS = ['daily', 'weekly_days', 'weekly_count', 'interval']
@@ -2859,6 +2874,8 @@ function normalizeHabit(habit) {
     checkin_mode: firstString(habit.checkin_mode, habit.checkinMode) ?? null,
     start_date: firstString(habit.start_date, habit.startDate) ?? null,
     time_hint: firstString(habit.time_hint, habit.timeHint) ?? null,
+    icon: firstString(habit.icon) ?? null,
+    group_id: firstString(habit.group_id, habit.groupId) ?? null,
     description: firstString(habit.description) ?? null,
     streak: normalizeStreak(habit.streak),
     coverage: normalizeCoverage(habit.coverage),
@@ -2908,6 +2925,35 @@ async function resolveHabitExpectedRev(service, habitId, args) {
   throw inputError('validation_failed', '缺少 expectedRev 且无法读取习惯当前版本；请先 action=get 读取习惯再用返回的 rev')
 }
 
+/**
+ * icon / groupId（M18）：三者语义不同——
+ * undefined = 没提到，不动；空字符串（或 null）= 显式清空（回到按名称推导 / 未分组）；字符串 = 设置值。
+ * 宿主 schema 不支持 type 联合数组，所以「清空」用空字符串表达，而不是 null。
+ */
+function readHabitIconArg(args) {
+  if (!args || !Object.prototype.hasOwnProperty.call(args, 'icon')) return undefined
+  const raw = args.icon
+  if (raw === null) return null
+  if (typeof raw !== 'string') throw inputError('validation_failed', 'icon 必须是字符串（清空传空字符串）')
+  const icon = raw.trim()
+  if (icon === '') return null
+  if (icon.length > 8) throw inputError('validation_failed', 'icon 最多 8 个字符（一个 emoji）')
+  return icon
+}
+
+function readHabitGroupArg(args) {
+  if (!args || !Object.prototype.hasOwnProperty.call(args, 'groupId')) return undefined
+  const raw = args.groupId
+  if (raw === null) return null
+  if (typeof raw !== 'string') throw inputError('validation_failed', 'groupId 必须是字符串（移出分组传空字符串）')
+  const groupId = raw.trim()
+  if (groupId === '') return null
+  if (!groupId.startsWith('hgrp_')) {
+    throw inputError('validation_failed', 'groupId 必须是 habit-group 接口返回的 hgrp_… id（移出分组传空字符串）')
+  }
+  return groupId
+}
+
 function readHabitCreateInput(args) {
   const name = readString(args, 'name')
   if (!name) throw inputError('validation_failed', 'create 需要 name')
@@ -2941,6 +2987,10 @@ function readHabitCreateInput(args) {
   if (startDate !== undefined) input.startDate = startDate
   const timeHint = readString(args, 'timeHint')
   if (timeHint !== undefined) input.timeHint = timeHint
+  const icon = readHabitIconArg(args)
+  if (icon !== undefined) input.icon = icon
+  const groupId = readHabitGroupArg(args)
+  if (groupId !== undefined) input.groupId = groupId
   return input
 }
 
@@ -2975,6 +3025,10 @@ function readHabitPatch(args) {
   if (startDate !== undefined) patch.startDate = startDate
   const timeHint = readString(args, 'timeHint')
   if (timeHint !== undefined) patch.timeHint = timeHint
+  const icon = readHabitIconArg(args)
+  if (icon !== undefined) patch.icon = icon
+  const groupId = readHabitGroupArg(args)
+  if (groupId !== undefined) patch.groupId = groupId
   const status = readString(args, 'status')
   if (status !== undefined) {
     assertHabitStatus(status)
@@ -3244,6 +3298,152 @@ async function runHabitMonth(service, args) {
   return { ok: true, action: 'month', month, habits: normalizeMonthHabits(result) }
 }
 
+// ── 习惯分组 helpers（M18）────────────────────────────────────
+
+function normalizeHabitGroup(group) {
+  if (!group || typeof group !== 'object') return null
+  const id = firstString(group.id, group.groupId, group.group_id)
+  const name = firstString(group.name)
+  if (!id && !name) return null
+  return {
+    id,
+    name: name ?? id,
+    sort_order: pickNumber(group.sort_order, group.sortOrder),
+    collapsed: group.collapsed === true,
+    rev: pickNumber(group.rev),
+  }
+}
+
+function habitGroupViewOf(result) {
+  if (!result || typeof result !== 'object') return null
+  if (result.group && typeof result.group === 'object') return result.group
+  if (result.habitGroup && typeof result.habitGroup === 'object') return result.habitGroup
+  return result
+}
+
+function requireHabitGroupArg(args) {
+  const raw = readString(args, 'habitGroupId') ?? readString(args, 'groupId')
+  if (!raw) throw inputError('validation_failed', '习惯分组操作需要 habitGroupId（hgrp_…，来自 action=list_groups）')
+  if (!raw.startsWith('hgrp_')) throw inputError('validation_failed', 'habitGroupId 必须是 hgrp_ 开头的习惯分组 id')
+  return raw
+}
+
+function readGroupSortOrder(args) {
+  if (args?.sortOrder === undefined || args.sortOrder === null) return undefined
+  const value = typeof args.sortOrder === 'number' ? args.sortOrder : Number(args.sortOrder)
+  if (!Number.isInteger(value) || value < 0) throw inputError('validation_failed', 'sortOrder 必须是非负整数')
+  return value
+}
+
+function readGroupName(args, { required = false } = {}) {
+  const name = readString(args, 'name')
+  if (required && !name) throw inputError('validation_failed', 'create_group 需要 name（分组名）')
+  if (name !== undefined && name.length > 40) throw inputError('validation_failed', '分组名最长 40 字')
+  return name
+}
+
+async function resolveHabitGroupExpectedRev(service, args, groupId) {
+  const explicit = readPositiveInt(args, 'expectedRev', Number.MAX_SAFE_INTEGER)
+  if (explicit !== undefined) return explicit
+  const method = pickMethodName(service, ['listHabitGroups'])
+  if (method) {
+    const result = await service[method]()
+    const items = asArray(result?.items).map(normalizeHabitGroup).filter(Boolean)
+    const current = items.find((group) => group.id === groupId)
+    if (current && isFiniteNumber(current.rev)) return current.rev
+  }
+  throw inputError('validation_failed', '缺少 expectedRev 且无法读取分组当前版本；请先 action=list_groups 再用返回的 rev')
+}
+
+async function runHabitGroupList(service, args) {
+  const method = requireM4Method(service, 'listHabitGroups', '习惯分组')
+  const result = await service[method]()
+  const items = asArray(result?.items).map(normalizeHabitGroup).filter(Boolean)
+  return { ok: true, action: 'list_groups', items, count: items.length }
+}
+
+async function runHabitGroupCreate(service, args) {
+  const method = requireM4Method(service, 'createHabitGroup', '习惯分组')
+  const input = { name: readGroupName(args, { required: true }) }
+  const sortOrder = readGroupSortOrder(args)
+  if (sortOrder !== undefined) input.sort_order = sortOrder
+  const collapsed = readBoolean(args, 'collapsed')
+  if (collapsed !== undefined) input.collapsed = collapsed
+  const result = await service[method](input)
+  const group = normalizeHabitGroup(habitGroupViewOf(result))
+  if (!group) throw inputError('internal', 'createHabitGroup 未返回分组对象')
+  return {
+    ok: true,
+    action: 'create_group',
+    group,
+    rev: pickNumber(result?.revision, group.rev),
+    changedFields: Object.keys(input),
+  }
+}
+
+async function runHabitGroupUpdate(service, args) {
+  const method = requireM4Method(service, 'updateHabitGroup', '习惯分组')
+  const habitGroupId = requireHabitGroupArg(args)
+  const patch = {}
+  const name = readGroupName(args)
+  if (name !== undefined) patch.name = name
+  const sortOrder = readGroupSortOrder(args)
+  if (sortOrder !== undefined) patch.sort_order = sortOrder
+  const collapsed = readBoolean(args, 'collapsed')
+  if (collapsed !== undefined) patch.collapsed = collapsed
+  const changedFields = Object.keys(patch)
+  if (changedFields.length === 0) {
+    throw inputError('validation_failed', 'update_group 没有可更新字段（可更新 name/collapsed/sortOrder）')
+  }
+  const expectedRev = await resolveHabitGroupExpectedRev(service, args, habitGroupId)
+  const result = await service[method](habitGroupId, patch, { expectedRev })
+  const group = normalizeHabitGroup(habitGroupViewOf(result))
+  return {
+    ok: true,
+    action: 'update_group',
+    habitGroupId,
+    group: group ?? { id: habitGroupId, name: patch.name ?? null },
+    rev: pickNumber(result?.revision, group?.rev),
+    changedFields,
+    diff: result?.diff ?? null,
+  }
+}
+
+async function runHabitGroupDelete(service, args) {
+  const method = requireM4Method(service, 'deleteHabitGroup', '习惯分组')
+  const habitGroupId = requireHabitGroupArg(args)
+  const explicit = readPositiveInt(args, 'expectedRev', Number.MAX_SAFE_INTEGER)
+  const expectedRev = explicit !== undefined ? explicit : await resolveHabitGroupExpectedRev(service, args, habitGroupId)
+  const result = await service[method](habitGroupId, { expectedRev })
+  const movedToUngrouped = asArray(result?.movedToUngrouped).filter((id) => typeof id === 'string')
+  return {
+    ok: true,
+    action: 'delete_group',
+    habitGroupId,
+    movedToUngrouped,
+    movedCount: movedToUngrouped.length,
+    rev: pickNumber(result?.revision, null),
+  }
+}
+
+async function runHabitGroupReorder(service, args) {
+  const method = requireM4Method(service, 'reorderHabitGroups', '习惯分组')
+  const raw = Array.isArray(args?.groupIds)
+    ? args.groupIds
+    : typeof args?.groupIds === 'string'
+      ? args.groupIds.split(',')
+      : []
+  const ids = raw.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+  if (ids.length === 0) throw inputError('validation_failed', 'reorder_groups 需要 groupIds（按目标顺序排列的分组 id 数组）')
+  if (new Set(ids).size !== ids.length) throw inputError('validation_failed', 'groupIds 不能重复')
+  for (const id of ids) {
+    if (!id.startsWith('hgrp_')) throw inputError('validation_failed', `groupIds 含非法分组 id：${id}`)
+  }
+  const result = await service[method]({ ids })
+  const items = asArray(result?.items).map(normalizeHabitGroup).filter(Boolean)
+  return { ok: true, action: 'reorder_groups', items, count: items.length }
+}
+
 const HABIT_MONTH_SYMBOLS = { done: '●', partial: '◐', skipped: '○', not_done: '×' }
 const HABIT_CELL_LIMIT = 31
 
@@ -3369,6 +3569,45 @@ export function renderHabit(_args, value) {
     return textBlocks(lines.join('\n'))
   }
 
+  if (action === 'list_groups') {
+    const items = asArray(value.items)
+    const lines = [`习惯分组：${items.length} 个`]
+    if (items.length === 0) {
+      lines.push('还没有分组；习惯都在「未分组」里。用 action=create_group 新建。')
+    } else {
+      for (const group of items) {
+        lines.push(`- ${group.name}｜${group.collapsed ? '已折叠' : '展开'}｜排序 ${group.sort_order ?? 0}${idLabel(group.id)}`)
+      }
+    }
+    return textBlocks(lines.join('\n'))
+  }
+
+  if (action === 'create_group') {
+    const group = value.group ?? {}
+    return textBlocks(`已创建习惯分组「${group.name ?? '—'}」（${group.id ?? '—'}）`)
+  }
+
+  if (action === 'update_group') {
+    const group = value.group ?? {}
+    const changes = asArray(value.changedFields).join('、') || '无字段变更'
+    return textBlocks(`已更新习惯分组「${group.name ?? value.habitGroupId ?? '—'}」：${changes}`)
+  }
+
+  if (action === 'delete_group') {
+    const lines = [`已删除习惯分组 ${value.habitGroupId ?? '—'}`]
+    lines.push(
+      value.movedCount > 0
+        ? `组内 ${value.movedCount} 个习惯已移回「未分组」，打卡记录不受影响。`
+        : '组内没有习惯。',
+    )
+    return textBlocks(lines.join('\n'))
+  }
+
+  if (action === 'reorder_groups') {
+    const items = asArray(value.items)
+    return textBlocks(`已按新顺序保存 ${items.length} 个习惯分组：${items.map((group) => group.name).join(' → ') || '—'}`)
+  }
+
   return textBlocks('习惯操作完成。')
 }
 
@@ -3377,11 +3616,12 @@ export function habitTool(service) {
   return {
     name: 'lifeos_habit',
     description: [
-      '管理 LifeOS 习惯：查看（list/get）、创建、更新、打卡（checkin）、撤销打卡（uncheck）、统计（stats）、月历（month）。',
+      '管理 LifeOS 习惯：查看（list/get）、创建、更新、打卡（checkin）、撤销打卡（uncheck）、统计（stats）、月历（month）；习惯分组 CRUD（list_groups/create_group/update_group/delete_group/reorder_groups）。',
       '权限：list/get/stats/month 只读（L0）；create、checkin、uncheck、以及 update 中的普通字段是 L2，会直接执行；**update 里改频率（frequencyRule）/周期目标（periodRule）/状态（active/paused/archived）是 L3**——工具不会执行，只返回 needsConfirm + 变更，你必须先展示 before→after，用户明确同意后再传 confirm:true。',
       '何时用：用户说“每天读书 30 分钟”“周三周五跑步”“今天读了，帮我打卡”“昨天忘了打卡，补一下”“这周习惯完成得怎么样”“看看这个月打卡”。',
       '何时不用：用户只是随口说计划（先确认再建习惯）；用户没说做了/没做时不要替用户打卡，也不要由计划推断完成；没有记录就说“未记录”。',
       '重要：list 返回的每一项都带 id（形如 hab_…），后续 get/update/checkin 必须用返回的 id，不要用名字猜 id；打卡默认记今天（本地日期），补记必须显式给 localDate 且 retro:true（最多往前 7 天）；同一天重复打卡由服务合并；streak/覆盖率必须带口径（grace/strict）引用，不要编造。',
+      '分组与图标（M18）：习惯可归属一个一级分组（groupId=hgrp_…，来自 lifeos_habit_group list）并带一个 emoji 图标（icon）。改这两个字段不是 L3，直接执行；groupId:null 移出分组，icon:null 回到按名称推导。',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -3417,6 +3657,26 @@ export function habitTool(service) {
         checkinMode: { type: 'string', enum: HABIT_CHECKIN_MODES, description: '打卡方式：manual=手动 / event_auto=事件自动 / either=两者皆可' },
         startDate: { type: 'string', description: '开始日期 YYYY-MM-DD' },
         timeHint: { type: 'string', description: '打卡时间提示 HH:mm，如 "07:30"' },
+        icon: {
+          type: 'string',
+          description: '习惯图标 emoji（最多 8 字符，如 "📖"）；不传=保持，传空字符串 ""=清空回到按名称推导',
+        },
+        groupId: {
+          type: 'string',
+          description:
+            'update/create 时是「习惯所属分组」id（hgrp_…）；不传=保持，传空字符串 ""=移出分组回到「未分组」。分组 CRUD 请用 habitGroupId',
+        },
+        habitGroupId: {
+          type: 'string',
+          description: '分组自身 id（hgrp_…，来自 action=list_groups）；update_group/delete_group 必填',
+        },
+        groupIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'reorder_groups 的目标顺序：按从前往后排列的分组 id 数组（必须覆盖想调整的分组）',
+        },
+        collapsed: { type: 'boolean', description: '分组是否折叠（create_group/update_group）' },
+        sortOrder: { type: 'integer', minimum: 0, description: '分组手工排序序号（越小越靠前）' },
         from: { type: 'string', description: 'stats 起始日期 YYYY-MM-DD（含）' },
         to: { type: 'string', description: 'stats 结束日期 YYYY-MM-DD（含）' },
         mode: { type: 'string', enum: HABIT_STREAK_MODES, description: 'stats 的 streak 口径：grace（默认，skipped/unknown 不打断）或 strict' },
@@ -3456,6 +3716,16 @@ export function habitTool(service) {
             return await runHabitStats(service, args)
           case 'month':
             return await runHabitMonth(service, args)
+          case 'list_groups':
+            return await runHabitGroupList(service, args)
+          case 'create_group':
+            return await runHabitGroupCreate(service, args)
+          case 'update_group':
+            return await runHabitGroupUpdate(service, args)
+          case 'delete_group':
+            return await runHabitGroupDelete(service, args)
+          case 'reorder_groups':
+            return await runHabitGroupReorder(service, args)
           default:
             return failValue('validation_failed', `未实现的动作：${action}`)
         }

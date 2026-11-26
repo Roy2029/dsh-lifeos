@@ -1401,6 +1401,117 @@ export function validateHabitId(id) {
   return { ok: true, value: id };
 }
 
+export function validateHabitGroupId(id) {
+  if (!isEntityId(id) || !String(id).startsWith('hgrp_')) return fail(['id 必须是 hgrp_ 开头的习惯分组 ID']);
+  return { ok: true, value: id };
+}
+
+const HABIT_GROUP_NAME_MAX = 40;
+const HABIT_ICON_MAX = 8;
+
+/** 习惯图标：单个 emoji（长度上限 8 个 UTF-16 单元），null/''/undefined → null（清除，回落按名称推导） */
+function optionalHabitIcon(body, name, errors) {
+  const value = body[name];
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') {
+    errors.push(`${name} 必须是字符串`);
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > HABIT_ICON_MAX) {
+    errors.push(`${name} 超过上限 ${HABIT_ICON_MAX} 字符`);
+    return null;
+  }
+  return trimmed;
+}
+
+/** 习惯分组引用：null / 缺省 → null（未分组），字符串必须 hgrp_ 前缀 */
+function optionalHabitGroupRef(body, name, errors) {
+  const value = body[name];
+  if (value === undefined || value === null || value === '') return null;
+  if (!isEntityId(value) || !String(value).startsWith('hgrp_')) {
+    errors.push(`${name} 必须是 hgrp_ 开头的分组 ID`);
+    return null;
+  }
+  return value;
+}
+
+/** POST /habit-groups */
+export function validateHabitGroupCreate(body) {
+  if (!isPlainObject(body)) return fail(['body 必须是 JSON 对象']);
+  const errors = [];
+  if (body.name === undefined || body.name === null) errors.push('name 必填');
+  const name = optionalString(body, 'name', errors, { max: HABIT_GROUP_NAME_MAX, allowEmpty: false });
+  const sortOrder = optionalInt(body, 'sort_order', errors);
+  let collapsed = null;
+  if (body.collapsed !== undefined && body.collapsed !== null) {
+    if (typeof body.collapsed !== 'boolean') errors.push('collapsed 必须是布尔值');
+    else collapsed = body.collapsed;
+  }
+  if (errors.length > 0) return fail(errors);
+  return {
+    ok: true,
+    value: compactCreateValue({
+      name: name === null ? null : name.trim(),
+      sort_order: sortOrder,
+      collapsed,
+    }),
+  };
+}
+
+/** PATCH /habit-groups/:id 的 patch 对象 */
+export function validateHabitGroupPatch(patch) {
+  if (!isPlainObject(patch)) return fail(['patch 必须是 JSON 对象']);
+  const errors = [];
+  const out = {};
+  if (patch.name !== undefined) {
+    if (patch.name === null) errors.push('name 不能为空');
+    else {
+      const name = optionalString(patch, 'name', errors, { max: HABIT_GROUP_NAME_MAX, allowEmpty: false });
+      if (name !== null) out.name = name.trim();
+    }
+  }
+  if (patch.sort_order !== undefined) {
+    const value = optionalInt(patch, 'sort_order', errors);
+    if (value !== null) out.sort_order = value;
+  }
+  if (patch.collapsed !== undefined) {
+    if (typeof patch.collapsed !== 'boolean') errors.push('collapsed 必须是布尔值');
+    else out.collapsed = patch.collapsed;
+  }
+  if (Object.keys(out).length === 0) errors.push('至少提供一个要更新的字段');
+  if (errors.length > 0) return fail(errors);
+  return { ok: true, value: out };
+}
+
+/** POST /habit-groups/reorder：ids 为拖拽后的完整顺序 */
+export function validateHabitGroupReorder(body) {
+  if (!isPlainObject(body)) return fail(['body 必须是 JSON 对象']);
+  const errors = [];
+  const ids = body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    errors.push('ids 必须是非空数组');
+  } else if (ids.length > 200) {
+    errors.push('ids 最多 200 项');
+  } else {
+    const seen = new Set();
+    for (const id of ids) {
+      if (!isEntityId(id) || !String(id).startsWith('hgrp_')) {
+        errors.push('ids 含非法习惯分组 ID');
+        break;
+      }
+      if (seen.has(id)) {
+        errors.push('ids 不能重复');
+        break;
+      }
+      seen.add(id);
+    }
+  }
+  if (errors.length > 0) return fail(errors);
+  return { ok: true, value: { ids: [...ids] } };
+}
+
 export function validateGoalId(id) {
   if (!isEntityId(id) || !String(id).startsWith('gol_')) return fail(['id 必须是 gol_ 开头的目标 ID']);
   return { ok: true, value: id };
@@ -1434,6 +1545,8 @@ export function validateHabitCreate(body) {
   const endDate = optionalLocalDate(body, 'end_date', errors);
   const timeHint = optionalString(body, 'time_hint', errors, { max: 40, allowEmpty: true });
   const sortOrder = optionalInt(body, 'sort_order', errors);
+  const icon = optionalHabitIcon(body, 'icon', errors);
+  const groupId = optionalHabitGroupRef(body, 'group_id', errors);
   if (errors.length > 0) return fail(errors);
   return {
     ok: true,
@@ -1448,6 +1561,8 @@ export function validateHabitCreate(body) {
       end_date: endDate,
       time_hint: timeHint,
       sort_order: sortOrder ?? 0,
+      icon,
+      group_id: groupId,
     }),
   };
 }
@@ -1518,6 +1633,12 @@ export function validateHabitPatch(patch) {
   if (patch.sort_order !== undefined) {
     const value = optionalInt(patch, 'sort_order', errors);
     if (value !== null) out.sort_order = value;
+  }
+  if (patch.icon !== undefined) {
+    out.icon = patch.icon === null ? null : optionalHabitIcon(patch, 'icon', errors);
+  }
+  if (patch.group_id !== undefined) {
+    out.group_id = patch.group_id === null ? null : optionalHabitGroupRef(patch, 'group_id', errors);
   }
   if (Object.keys(out).length === 0) errors.push('至少提供一个要更新的字段');
   if (errors.length > 0) return fail(errors);

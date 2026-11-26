@@ -687,6 +687,12 @@ export function createLifeosService(deps) {
     getStats: habitOps.getStats,
     getMonth: habitOps.getMonth,
     todayHabits: habitOps.todayHabits,
+    // M18 习惯分组（schema v4）
+    listHabitGroups: habitOps.listHabitGroups,
+    createHabitGroup: habitOps.createHabitGroup,
+    updateHabitGroup: habitOps.updateHabitGroup,
+    deleteHabitGroup: habitOps.deleteHabitGroup,
+    reorderHabitGroups: habitOps.reorderHabitGroups,
     // M4 规划（v0.7；替代 M1 taskOps 的项目三方法）
     listProjects: planningOps.listProjects,
     getProject: planningOps.getProject,
