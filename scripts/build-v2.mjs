@@ -38,6 +38,24 @@ const files = fs
 if (!files.length) fail('no client-v2/*.js files')
 
 const chunks = []
+
+// 共享前导块：src/client-shared/*.js 里零依赖的纯逻辑（M19 起用），
+// 由本脚本剥掉 `export ` 前缀后内联到 client-v2 之前，保证客户端/测试同一份实现。
+const SHARED_MODULES = ['markdown.js']
+const sharedDir = path.join(repo, 'src', 'client-shared')
+for (const name of SHARED_MODULES) {
+  const filePath = path.join(sharedDir, name)
+  if (!fs.existsSync(filePath)) fail('shared module not found: ' + filePath)
+  let code = fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n')
+  if (/^[ \t]*import[ \t]/m.test(code)) fail('src/client-shared/' + name + ' must not contain ESM import')
+  code = code
+    .replace(/^[ \t]*export[ \t]+(?=(?:async[ \t]+)?function|class|const|let|var)/gm, '')
+    .replace(/^[ \t]*export[ \t]*\{[^}]*\}[ \t]*;?[ \t]*\n?/gm, '')
+  if (/^[ \t]*export[ \t]/m.test(code)) fail('src/client-shared/' + name + ' has unsupported export form')
+  const lines = code.split('\n').length
+  chunks.push('/* ---- shared:' + name + ' (' + lines + ' lines) ---- */\n' + code.trim() + '\n')
+}
+
 for (const name of files) {
   const filePath = path.join(sourceDir, name)
   let code = fs.readFileSync(filePath, 'utf8')

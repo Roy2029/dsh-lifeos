@@ -1,6 +1,6 @@
 {
   "name": "dsh-lifeos",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "LifeOS — DSH 个人管理智能助理插件：任务 / 日历 / 习惯 / 笔记四合一工作区，本地优先",
   "license": "MIT",

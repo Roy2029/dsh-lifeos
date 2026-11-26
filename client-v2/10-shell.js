@@ -842,8 +842,57 @@ async function runM6SelfCheck(force) {
 }
 
 
-/* ── 全局快速记录：草稿自动保存（#15） ── */
+/* ── 全局快速记录：草稿自动保存（#15） + 分类选择（#21） ── */
 const V2_CAPTURE_DRAFT_KEY = 'lifeos.v2.captureDraft'
+const V2_CAPTURE_CLASSIFY_KEY = 'lifeos.v2.captureClassify'
+const V2_CAPTURE_WHEN_ITEMS = [
+  { id: null, label: '不指定' },
+  { id: 'today', label: '今天' },
+  { id: 'tomorrow', label: '明天' },
+  { id: 'next_week', label: '下周' },
+]
+
+/** 归一化分类选择：只保留已知字段，避免脏 localStorage 影响提交。 */
+function v2CaptureNormalizeClassify(value) {
+  const source = value && typeof value === 'object' ? value : {}
+  const when = V2_CAPTURE_WHEN_ITEMS.some(function match(item) { return item.id === source.when }) ? source.when : null
+  const tags = Array.isArray(source.tags)
+    ? source.tags
+      .map(function normalizeTag(tag) {
+        if (!tag || typeof tag !== 'object') return null
+        const name = String(tag.name || '').trim()
+        if (!name) return null
+        return { id: typeof tag.id === 'string' && tag.id ? tag.id : null, name: name }
+      })
+      .filter(Boolean)
+    : []
+  return {
+    listId: typeof source.listId === 'string' && source.listId ? source.listId : null,
+    groupId: typeof source.groupId === 'string' && source.groupId ? source.groupId : null,
+    tags: tags,
+    when: when,
+    time: /^\d{2}:\d{2}$/.test(String(source.time || '')) ? String(source.time) : '',
+    open: source.open === true,
+  }
+}
+
+function v2ReadCaptureClassify() {
+  try {
+    const raw = window.localStorage.getItem(V2_CAPTURE_CLASSIFY_KEY)
+    if (!raw) return v2CaptureNormalizeClassify(null)
+    return v2CaptureNormalizeClassify(JSON.parse(raw))
+  } catch (error) {
+    return v2CaptureNormalizeClassify(null)
+  }
+}
+
+function v2WriteCaptureClassify(classify) {
+  try {
+    window.localStorage.setItem(V2_CAPTURE_CLASSIFY_KEY, JSON.stringify(v2CaptureNormalizeClassify(classify)))
+  } catch (error) {
+    /* 忽略写入失败 */
+  }
+}
 
 function v2ReadCaptureDraft() {
   try {
@@ -851,7 +900,11 @@ function v2ReadCaptureDraft() {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed.text !== 'string') return null
-    return { text: parsed.text, target: parsed.target === 'note' ? 'note' : 'task' }
+    return {
+      text: parsed.text,
+      target: parsed.target === 'note' ? 'note' : 'task',
+      classify: parsed.classify ? v2CaptureNormalizeClassify(parsed.classify) : null,
+    }
   } catch (error) {
     return null
   }
@@ -859,7 +912,14 @@ function v2ReadCaptureDraft() {
 
 function v2WriteCaptureDraft(draft) {
   try {
-    window.localStorage.setItem(V2_CAPTURE_DRAFT_KEY, JSON.stringify({ text: String(draft.text || ''), target: draft.target === 'note' ? 'note' : 'task' }))
+    window.localStorage.setItem(
+      V2_CAPTURE_DRAFT_KEY,
+      JSON.stringify({
+        text: String(draft.text || ''),
+        target: draft.target === 'note' ? 'note' : 'task',
+        classify: v2CaptureNormalizeClassify(draft.classify),
+      }),
+    )
   } catch (error) {
     /* 忽略写入失败 */
   }
@@ -873,6 +933,108 @@ function v2ClearCaptureDraft() {
   }
 }
 
+/* ── 快速记录的分类提交（#21） ── */
+
+/** 分类里「今天/明天/下周」折算成本地日期键（自算，不依赖宿主全局日期函数）。 */
+function v2CaptureDateKeyAfter(days) {
+  const date = new Date()
+  date.setDate(date.getDate() + (Number(days) || 0))
+  const pad = function pad2(n) { return String(n).padStart(2, '0') }
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
+}
+
+function v2CaptureWhenDate(when) {
+  if (!when) return null
+  const days = when === 'today' ? 0 : when === 'tomorrow' ? 1 : when === 'next_week' ? 7 : null
+  if (days === null) return null
+  return v2CaptureDateKeyAfter(days)
+}
+
+function v2CaptureLocalDateTimeIso(dateKey, time) {
+  const parts = String(dateKey || '').split('-').map(Number)
+  const hm = String(time || '').split(':').map(Number)
+  if (parts.length !== 3 || parts.some(function bad(n) { return !Number.isFinite(n) })) return null
+  const date = new Date(parts[0], parts[1] - 1, parts[2], Number.isFinite(hm[0]) ? hm[0] : 0, Number.isFinite(hm[1]) ? hm[1] : 0, 0, 0)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString()
+}
+
+/** 标签按名称解析：已有就用，没有就建。 */
+async function v2CaptureResolveTags(tags, knownTags) {
+  const ids = []
+  for (const tag of Array.isArray(tags) ? tags : []) {
+    const name = String(tag && tag.name ? tag.name : '').trim()
+    if (!name) continue
+    if (tag.id) {
+      if (ids.indexOf(tag.id) < 0) ids.push(tag.id)
+      continue
+    }
+    const known = (Array.isArray(knownTags) ? knownTags : []).find(function find(item) {
+      return String(item.name || '').toLowerCase() === name.toLowerCase()
+    })
+    if (known && known.id) {
+      if (ids.indexOf(known.id) < 0) ids.push(known.id)
+      continue
+    }
+    const created = await apiRequest('/tags', { method: 'POST', body: JSON.stringify({ name: name }) })
+    const id = created && (created.tag ? created.tag.id : created.id)
+    if (id && ids.indexOf(id) < 0) ids.push(id)
+  }
+  return ids
+}
+
+function v2CaptureGroupName(meta, listId, groupId) {
+  if (!groupId) return ''
+  const group = ((meta && meta.groups) || []).find(function find(g) {
+    return g.id === groupId && (!listId || g.listId === listId)
+  })
+  return group ? group.name : ''
+}
+
+function v2CaptureListName(meta, listId) {
+  if (!listId) return '收集箱'
+  const list = ((meta && meta.lists) || []).find(function find(item) {
+    return item.id === listId
+  })
+  return list ? list.name : '收集箱'
+}
+
+function v2CaptureSummary(classify, meta) {
+  const parts = []
+  const groupName = v2CaptureGroupName(meta, classify.listId, classify.groupId)
+  if (classify.listId || groupName) {
+    parts.push(groupName ? v2CaptureListName(meta, classify.listId) + ' / ' + groupName : v2CaptureListName(meta, classify.listId))
+  }
+  if (classify.when) {
+    const whenLabel = V2_CAPTURE_WHEN_ITEMS.find(function find(item) { return item.id === classify.when })
+    parts.push((whenLabel ? whenLabel.label : '') + (classify.time ? ' ' + classify.time : ''))
+  }
+  if (classify.tags.length) parts.push(classify.tags.map(function tag(item) { return '#' + item.name }).join(' '))
+  return parts.join(' · ')
+}
+
+/** 按分类创建收集箱任务；未选择分类时等价于原来的「直接进收集箱」。 */
+async function v2CaptureSubmitTask(text, classify, meta) {
+  const body = { title: text }
+  if (classify.listId) body.listId = classify.listId
+  if (classify.groupId) body.groupId = classify.groupId
+  const tagIds = await v2CaptureResolveTags(classify.tags, meta && meta.tags)
+  if (tagIds.length) body.tagIds = tagIds
+  const dateKey = v2CaptureWhenDate(classify.when)
+  if (dateKey) {
+    if (classify.time) {
+      const iso = v2CaptureLocalDateTimeIso(dateKey, classify.time)
+      if (iso) body.scheduledStartAt = iso
+      else body.scheduledDate = dateKey
+    } else {
+      body.scheduledDate = dateKey
+    }
+  }
+  await apiRequest('/tasks', { method: 'POST', body: JSON.stringify(body) })
+  const summary = v2CaptureSummary(classify, meta)
+  return { kind: 'task', label: summary ? '已加入' + summary : '已加入收集箱' }
+}
+
 /* ── 全局快速记录浮层（DSH 对话页也使用 V2 样式与提交语义） ── */
 function V2HostCaptureDialog(props) {
   const closeCallback = props && typeof props.onClose === 'function' ? props.onClose : null
@@ -884,12 +1046,24 @@ function V2HostCaptureDialog(props) {
   const [error, setError] = useState('')
   const [hintPulse, setHintPulse] = useState(false)
   const [draftRestored] = useState(!!(initialDraft && initialDraft.text.trim()))
+  const [classify, setClassify] = useState(function initClassify() {
+    const remembered = v2ReadCaptureClassify()
+    const fromDraft = initialDraft && initialDraft.classify ? initialDraft.classify : null
+    if (!fromDraft) return remembered
+    return Object.assign({}, remembered, fromDraft, { open: remembered.open === true })
+  })
+  const [meta, setMeta] = useState({ loaded: false, loading: false, lists: [], groups: [], tags: [], error: '' })
+  const [tagDraft, setTagDraft] = useState('')
   const textareaRef = useRef(null)
 
   useEffect(function persistDraft() {
-    if (String(text || '').trim()) v2WriteCaptureDraft({ text: text, target: target })
+    if (String(text || '').trim()) v2WriteCaptureDraft({ text: text, target: target, classify: classify })
     else v2ClearCaptureDraft()
-  }, [text, target])
+  }, [text, target, classify])
+
+  useEffect(function persistClassify() {
+    v2WriteCaptureClassify(classify)
+  }, [classify])
 
   useEffect(function focusOnOpen() {
     const timer = setTimeout(function focusLater() {
@@ -917,13 +1091,92 @@ function V2HostCaptureDialog(props) {
     }
   }
 
+  function updateClassify(patch) {
+    setClassify(function merge(current) {
+      return v2CaptureNormalizeClassify(Object.assign({}, current, patch))
+    })
+  }
+
+  async function loadCaptureMeta() {
+    setMeta(function markLoading(current) {
+      return Object.assign({}, current, { loading: true })
+    })
+    try {
+      const listsValue = await apiRequest('/lists')
+      const tagsValue = await apiRequest('/tags')
+      const lists = (listsValue && listsValue.items) || []
+      const tags = (tagsValue && tagsValue.items) || []
+      const groupLists = await Promise.all(
+        lists.map(async function loadGroups(list) {
+          try {
+            const value = await apiRequest('/lists/' + encodeURIComponent(list.id) + '/groups')
+            return ((value && value.items) || []).map(function attach(g) {
+              return Object.assign({}, g, { listId: list.id })
+            })
+          } catch (inner) {
+            return []
+          }
+        }),
+      )
+      setMeta({
+        loaded: true,
+        loading: false,
+        lists: lists,
+        tags: tags,
+        groups: [].concat.apply([], groupLists),
+        error: '',
+      })
+    } catch (error) {
+      setMeta(function markError(current) {
+        return Object.assign({}, current, { loaded: true, loading: false, error: errorText(error) })
+      })
+    }
+  }
+
+  function toggleClassifyPanel() {
+    const next = classify.open !== true
+    updateClassify({ open: next })
+    if (next && !meta.loaded && !meta.loading) loadCaptureMeta()
+  }
+
+  function addTagDraft() {
+    const name = String(tagDraft || '').trim().replace(/^#/, '')
+    if (!name) return
+    const exists = classify.tags.some(function same(tag) {
+      return tag.name === name
+    })
+    if (!exists) {
+      const known = meta.tags.find(function find(t) {
+        return String(t.name || '').toLowerCase() === name.toLowerCase()
+      })
+      updateClassify({ tags: classify.tags.concat([{ id: known ? known.id : null, name: name }]) })
+    }
+    setTagDraft('')
+  }
+
+  function toggleTag(tag) {
+    const picked = classify.tags.some(function has(item) {
+      return item.name === tag.name
+    })
+    updateClassify({
+      tags: picked
+        ? classify.tags.filter(function drop(item) {
+          return item.name !== tag.name
+        })
+        : classify.tags.concat([{ id: tag.id, name: tag.name }]),
+    })
+  }
+
   async function submit() {
     const value = String(text || '').trim()
     if (!value || saving) return
     setSaving(true)
     setError('')
     try {
-      const result = await lifeosQuickCaptureSubmit(value, target)
+      const result =
+        target === 'task'
+          ? await v2CaptureSubmitTask(value, classify, meta)
+          : await lifeosQuickCaptureSubmit(value, target)
       if (result && result.label) runtime.toast('success', result.label)
       if (savedCallback) {
         try {
@@ -967,6 +1220,217 @@ function V2HostCaptureDialog(props) {
     }
     event.preventDefault()
     submit()
+  }
+
+  function renderClassifyPanel() {
+    const panelStyle = {
+      marginTop: 2,
+      padding: '10px 12px',
+      borderRadius: 10,
+      border: '1px solid ' + V2.line,
+      background: 'rgba(255,255,255,0.02)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+    }
+    const labelStyle = { fontSize: v2fs(11), color: V2.faint, marginBottom: 4 }
+    const selectStyle = v2InputStyle({
+      fontSize: v2fs(12),
+      padding: '3px 8px',
+      height: 28,
+      background: V2_T.surface.input,
+      border: '1px solid ' + V2_T.border.subtle,
+      borderRadius: V2_T.radius.sm,
+    })
+    if (meta.loading && !meta.loaded) {
+      return h('div', { style: Object.assign({}, panelStyle, { color: V2.sub }) }, '正在读取清单与标签…')
+    }
+    if (meta.error) {
+      return h('div', { style: Object.assign({}, panelStyle, { color: V2.danger }) }, '分类信息加载失败：' + meta.error)
+    }
+    const groupOptions = meta.groups.filter(function ofList(group) {
+      return !classify.listId || group.listId === classify.listId
+    })
+    const pickedNames = classify.tags.map(function name(tag) { return tag.name })
+    const suggestionTags = meta.tags
+      .filter(function available(tag) { return pickedNames.indexOf(tag.name) < 0 })
+      .slice(0, 8)
+    return h(
+      'div',
+      { style: panelStyle },
+      h(
+        'div',
+        { style: { display: 'flex', gap: 10 } },
+        h(
+          'div',
+          { style: { flex: '1 1 0', minWidth: 0 } },
+          h('div', { style: labelStyle }, '清单'),
+          h(
+            'select',
+            {
+              value: classify.listId || '',
+              'aria-label': '清单',
+              onChange: function onChange(event) {
+                updateClassify({ listId: event.target.value || null, groupId: null })
+              },
+              style: Object.assign({}, selectStyle, { width: '100%' }),
+            },
+            h('option', { value: '' }, '收集箱'),
+            meta.lists.map(function map(list) {
+              return h('option', { key: list.id, value: list.id }, list.name)
+            }),
+          ),
+        ),
+        h(
+          'div',
+          { style: { flex: '1 1 0', minWidth: 0 } },
+          h('div', { style: labelStyle }, '分组'),
+          h(
+            'select',
+            {
+              value: classify.groupId || '',
+              'aria-label': '分组',
+              disabled: groupOptions.length === 0,
+              onChange: function onChange(event) {
+                updateClassify({ groupId: event.target.value || null })
+              },
+              style: Object.assign({}, selectStyle, { width: '100%' }),
+            },
+            h('option', { value: '' }, groupOptions.length ? '不分组' : '该清单没有分组'),
+            groupOptions.map(function map(group) {
+              return h('option', { key: group.id, value: group.id }, group.name)
+            }),
+          ),
+        ),
+      ),
+      h(
+        'div',
+        null,
+        h('div', { style: labelStyle }, '时间'),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+          h(
+            'div',
+            { style: { display: 'flex', gap: 2, border: '1px solid ' + V2.line, borderRadius: 8, padding: 2 } },
+            V2_CAPTURE_WHEN_ITEMS.map(function map(item) {
+              const active = classify.when === item.id
+              return h(
+                'button',
+                {
+                  key: item.id || 'none',
+                  type: 'button',
+                  onClick: function onClick() {
+                    updateClassify({ when: item.id })
+                  },
+                  style: {
+                    padding: '3px 8px',
+                    borderRadius: 6,
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: active ? V2.hover : 'transparent',
+                    color: active ? V2.text : V2.sub,
+                    fontFamily: COLORS.fontFamily,
+                    fontSize: v2fs(12),
+                  },
+                },
+                item.label,
+              )
+            }),
+          ),
+          h('input', {
+            type: 'time',
+            value: classify.time,
+            'aria-label': '具体时间',
+            disabled: !classify.when,
+            onChange: function onChange(event) {
+              updateClassify({ time: event.target.value })
+            },
+            style: Object.assign({}, selectStyle, { width: 92, opacity: classify.when ? 1 : 0.45 }),
+          }),
+        ),
+      ),
+      h(
+        'div',
+        null,
+        h('div', { style: labelStyle }, '标签'),
+        classify.tags.length
+          ? h(
+            'div',
+            { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 } },
+            classify.tags.map(function picked(tag) {
+              return h(
+                'span',
+                {
+                  key: 'picked-' + tag.name,
+                  style: {
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontSize: v2fs(11),
+                    padding: '2px 8px',
+                    borderRadius: V2_T.radius.pill,
+                    background: V2_T.accent.soft,
+                    border: '1px solid ' + V2_T.accent.line,
+                    color: V2.text,
+                  },
+                },
+                '#' + tag.name,
+                h('button', {
+                  type: 'button',
+                  title: '移除标签',
+                  onClick: function onClick() {
+                    updateClassify({
+                      tags: classify.tags.filter(function keep(item) { return item.name !== tag.name }),
+                    })
+                  },
+                  style: { border: 'none', background: 'transparent', color: V2.sub, cursor: 'pointer', padding: 0, fontSize: v2fs(11) },
+                }, '×'),
+              )
+            }),
+          )
+          : null,
+        h('input', {
+          type: 'text',
+          value: tagDraft,
+          'aria-label': '新标签',
+          placeholder: '输入标签名，Enter 添加',
+          onChange: function onChange(event) {
+            setTagDraft(event.target.value)
+          },
+          onKeyDown: function onKeyDown(event) {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            event.stopPropagation()
+            addTagDraft()
+          },
+          style: Object.assign({}, selectStyle, { width: '100%' }),
+        }),
+        suggestionTags.length
+          ? h(
+            'div',
+            { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
+            suggestionTags.map(function suggest(tag) {
+              return h('button', {
+                key: 'suggest-' + tag.id,
+                type: 'button',
+                onClick: function onClick() { toggleTag(tag) },
+                style: {
+                  padding: '2px 8px',
+                  borderRadius: V2_T.radius.pill,
+                  border: '1px solid ' + V2_T.border.subtle,
+                  background: 'transparent',
+                  color: V2.text.secondary,
+                  cursor: 'pointer',
+                  fontSize: v2fs(11),
+                  fontFamily: COLORS.fontFamily,
+                },
+              }, '#' + tag.name)
+            }),
+          )
+          : null,
+      ),
+    )
   }
 
   return h(
@@ -1061,6 +1525,43 @@ function V2HostCaptureDialog(props) {
           )
         }),
       ),
+      target === 'task'
+        ? h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 24 } },
+          h(
+            'button',
+            {
+              type: 'button',
+              onClick: toggleClassifyPanel,
+              'aria-expanded': classify.open === true ? 'true' : 'false',
+              title: '选择清单、分组、标签与时间',
+              style: Object.assign({}, v2BtnStyle('ghost'), {
+                padding: '2px 8px',
+                fontSize: v2fs(12),
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                color: v2CaptureSummary(classify, meta) ? V2.text : V2.sub,
+              }),
+            },
+            h(V2Icon, { name: 'filter', size: 12 }),
+            v2CaptureSummary(classify, meta) || '分类',
+            h(V2Icon, { name: classify.open ? 'chevronDown' : 'chevronRight', size: 11 }),
+          ),
+          v2CaptureSummary(classify, meta)
+            ? h('button', {
+              type: 'button',
+              title: '清除分类',
+              onClick: function onClick() {
+                updateClassify({ listId: null, groupId: null, tags: [], when: null, time: '' })
+              },
+              style: Object.assign({}, v2BtnStyle('ghost'), { padding: '2px 6px', fontSize: v2fs(11) }),
+            }, '清除')
+            : null,
+        )
+        : null,
+      target === 'task' && classify.open === true ? renderClassifyPanel() : null,
       h('textarea', {
         ref: textareaRef,
         autoFocus: true,

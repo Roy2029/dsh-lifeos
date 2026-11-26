@@ -42,7 +42,7 @@ window.__ModuleLoader__.load({
     const API_PREFIX = '/api/lifeos'
     const PANEL_ID = 'lifeos'
     const OVERLAY_ID = 'lifeos-quick-capture'
-    const PLUGIN_VERSION = '0.2.0'
+    const PLUGIN_VERSION = '0.3.0'
     const TAB_STORAGE_KEY = 'lifeos.panel.tab'
     const DRAFT_STORAGE_KEY = 'lifeos.quick-capture.draft'
     const QUICK_CAPTURE_LABEL = '快速记录（Ctrl+Shift+Space）'
@@ -9113,6 +9113,571 @@ window.__ModuleLoader__.load({
     }
 
     /* ==== V2-MODULES-START ==== */
+/* ---- shared:markdown.js (564 lines) ---- */
+/**
+ * Markdown 解析与渲染（M19 #23）。
+ *
+ * 纯函数、零依赖、无 I/O：既能被 node:test 直接单测，也能由
+ * `scripts/build-v2.mjs` 以「共享前导块」的方式内联进 `client.js`。
+ *
+ * 设计约束：
+ * - 只产出虚拟节点（通过调用方传入的 `h`），不拼 HTML 字符串，因此没有 innerHTML 注入面；
+ * - 链接只放行 http/https/mailto/# 与相对路径，`javascript:` 等一律降级为纯文本；
+ * - 解析是「够用」而不是完整 CommonMark：覆盖标题/粗斜/删除线/行内代码/链接/图片/
+ *   引用/分割线/有序与无序列表/任务列表/表格/围栏代码块，未知语法按段落原样呈现。
+ */
+
+const MAX_MARKDOWN_CHARS = 200000
+const HEADING_SIZES = [22, 19, 17, 15, 14, 13]
+
+function isBlank(line) {
+  return /^\s*$/.test(line)
+}
+
+function isFence(line) {
+  return /^\s{0,3}(```|~~~)\s*[\w+#.-]*\s*$/.test(line)
+}
+
+function isHeading(line) {
+  return /^\s{0,3}#{1,6}\s+/.test(line)
+}
+
+function isHr(line) {
+  return /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)
+}
+
+function isQuote(line) {
+  return /^\s{0,3}>/.test(line)
+}
+
+function isListItem(line) {
+  return /^(\s*)([-*+]|\d{1,9}[.)])\s+/.test(line)
+}
+
+function isTableDelimiter(line) {
+  const trimmed = String(line || '').trim()
+  if (trimmed.indexOf('-') < 0) return false
+  const cells = splitRow(trimmed)
+  if (!cells.length) return false
+  return cells.every(function each(cell) {
+    return /^:?-{1,}:?$/.test(cell.replace(/\s+/g, ''))
+  })
+}
+
+function isTableStart(lines, index) {
+  const line = lines[index]
+  if (!line || line.indexOf('|') < 0) return false
+  const next = lines[index + 1]
+  if (next === undefined) return false
+  return isTableDelimiter(next)
+}
+
+function isBlockStart(lines, index) {
+  const line = lines[index]
+  if (line === undefined) return true
+  if (isBlank(line)) return true
+  return isFence(line) || isHeading(line) || isHr(line) || isQuote(line) || isListItem(line) || isTableStart(lines, index)
+}
+
+function splitRow(line) {
+  let text = String(line || '').trim()
+  if (text.startsWith('|')) text = text.slice(1)
+  if (text.endsWith('|')) text = text.slice(0, -1)
+  const cells = []
+  let buffer = ''
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (ch === '\\' && text[i + 1] === '|') {
+      buffer += '|'
+      i += 1
+      continue
+    }
+    if (ch === '|') {
+      cells.push(buffer.trim())
+      buffer = ''
+      continue
+    }
+    buffer += ch
+  }
+  cells.push(buffer.trim())
+  return cells
+}
+
+function alignmentOf(cell) {
+  const text = String(cell || '').replace(/\s+/g, '')
+  const left = text.startsWith(':')
+  const right = text.endsWith(':')
+  if (left && right) return 'center'
+  if (right) return 'right'
+  if (left) return 'left'
+  return null
+}
+
+/* ── 行内解析 ─────────────────────────────────────────────── */
+
+function mergeText(nodes) {
+  const out = []
+  for (const node of nodes) {
+    if (node.type === 'text' && out.length && out[out.length - 1].type === 'text') {
+      out[out.length - 1] = { type: 'text', value: out[out.length - 1].value + node.value }
+      continue
+    }
+    out.push(node)
+  }
+  return out
+}
+
+function indexOfClosingParen(source, start) {
+  let depth = 1
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i]
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (ch === '(') depth += 1
+    else if (ch === ')') {
+      depth -= 1
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+function isWordChar(ch) {
+  return !!ch && /[0-9A-Za-z]/.test(ch)
+}
+
+/**
+ * 找强调的收尾标记。
+ * - `_` 不能出现在单词内部（`snake_case` 不应变成斜体）；
+ * - 收尾标记前面不能是空白（`* a *` 不成立）。
+ */
+function emphasisEnd(source, marker, start) {
+  const previous = source[start - 2]
+  if (marker === '_' && isWordChar(previous)) return -1
+  let index = start
+  while (index < source.length) {
+    const found = source.indexOf(marker, index)
+    if (found < 0) return -1
+    const before = source[found - 1]
+    const after = source[found + marker.length]
+    const wordBoundaryOk = marker !== '_' || !isWordChar(after)
+    if (found > start && before && !/\s/.test(before) && wordBoundaryOk) return found
+    index = found + marker.length
+  }
+  return -1
+}
+
+function parseInline(source) {
+  const text = String(source == null ? '' : source)
+  const nodes = []
+  let buffer = ''
+  let i = 0
+  function flush() {
+    if (!buffer) return
+    nodes.push({ type: 'text', value: buffer })
+    buffer = ''
+  }
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === '\\' && i + 1 < text.length) {
+      buffer += text[i + 1]
+      i += 2
+      continue
+    }
+    if (ch === '`') {
+      const end = text.indexOf('`', i + 1)
+      if (end > i + 1) {
+        flush()
+        nodes.push({ type: 'code', value: text.slice(i + 1, end) })
+        i = end + 1
+        continue
+      }
+    }
+    if (ch === '!' && text[i + 1] === '[') {
+      const labelEnd = text.indexOf(']', i + 2)
+      if (labelEnd > 0 && text[labelEnd + 1] === '(') {
+        const targetEnd = indexOfClosingParen(text, labelEnd + 2)
+        if (targetEnd > 0) {
+          flush()
+          nodes.push({ type: 'image', alt: text.slice(i + 2, labelEnd), src: text.slice(labelEnd + 2, targetEnd).trim() })
+          i = targetEnd + 1
+          continue
+        }
+      }
+    }
+    if (ch === '[') {
+      const labelEnd = text.indexOf(']', i + 1)
+      if (labelEnd > 0 && text[labelEnd + 1] === '(') {
+        const targetEnd = indexOfClosingParen(text, labelEnd + 2)
+        if (targetEnd > 0) {
+          flush()
+          nodes.push({
+            type: 'link',
+            href: text.slice(labelEnd + 2, targetEnd).trim(),
+            children: parseInline(text.slice(i + 1, labelEnd)),
+          })
+          i = targetEnd + 1
+          continue
+        }
+      }
+    }
+    if (text.startsWith('**', i) || text.startsWith('__', i)) {
+      const marker = text.slice(i, i + 2)
+      const end = text.indexOf(marker, i + 2)
+      if (end > i + 2) {
+        flush()
+        nodes.push({ type: 'strong', children: parseInline(text.slice(i + 2, end)) })
+        i = end + 2
+        continue
+      }
+    }
+    if (text.startsWith('~~', i)) {
+      const end = text.indexOf('~~', i + 2)
+      if (end > i + 2) {
+        flush()
+        nodes.push({ type: 'del', children: parseInline(text.slice(i + 2, end)) })
+        i = end + 2
+        continue
+      }
+    }
+    if (ch === '*' || ch === '_') {
+      const end = emphasisEnd(text, ch, i + 1)
+      if (end > i + 1) {
+        flush()
+        nodes.push({ type: 'em', children: parseInline(text.slice(i + 1, end)) })
+        i = end + 1
+        continue
+      }
+    }
+    buffer += ch
+    i += 1
+  }
+  flush()
+  return mergeText(nodes)
+}
+
+/* ── 块解析 ───────────────────────────────────────────────── */
+
+function parseMarkdown(text) {
+  const source = String(text == null ? '' : text).replace(/\r\n?/g, '\n').slice(0, MAX_MARKDOWN_CHARS)
+  const lines = source.split('\n')
+  const blocks = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (isBlank(line)) {
+      i += 1
+      continue
+    }
+    const fence = /^\s{0,3}(```|~~~)\s*([\w+#.-]*)\s*$/.exec(line)
+    if (fence) {
+      const marker = fence[1]
+      const lang = fence[2] || ''
+      const buffer = []
+      i += 1
+      while (i < lines.length && !new RegExp('^\\s{0,3}' + marker + '\\s*$').test(lines[i])) {
+        buffer.push(lines[i])
+        i += 1
+      }
+      if (i < lines.length) i += 1
+      blocks.push({ type: 'code', lang, text: buffer.join('\n') })
+      continue
+    }
+    const heading = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line)
+    if (heading) {
+      blocks.push({ type: 'heading', level: heading[1].length, inline: parseInline(heading[2]) })
+      i += 1
+      continue
+    }
+    if (isHr(line)) {
+      blocks.push({ type: 'hr' })
+      i += 1
+      continue
+    }
+    if (isQuote(line)) {
+      const inner = []
+      while (i < lines.length && isQuote(lines[i])) {
+        inner.push(lines[i].replace(/^\s{0,3}>\s?/, ''))
+        i += 1
+      }
+      blocks.push({ type: 'quote', blocks: parseMarkdown(inner.join('\n')) })
+      continue
+    }
+    if (isTableStart(lines, i)) {
+      const header = splitRow(line)
+      const align = splitRow(lines[i + 1]).map(alignmentOf)
+      i += 2
+      const rows = []
+      while (i < lines.length && !isBlank(lines[i]) && lines[i].indexOf('|') >= 0 && !isListItem(lines[i])) {
+        rows.push(splitRow(lines[i]).map(parseInline))
+        i += 1
+      }
+      blocks.push({ type: 'table', header: header.map(parseInline), align, rows })
+      continue
+    }
+    const listMatch = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(line)
+    if (listMatch) {
+      const ordered = /^\d/.test(listMatch[2])
+      const start = ordered ? Number(String(listMatch[2]).replace(/[.)]$/, '')) || 1 : 1
+      const items = []
+      while (i < lines.length) {
+        const current = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(lines[i])
+        if (!current) break
+        if (/^\d/.test(current[2]) !== ordered) break
+        let body = current[3]
+        let checked = null
+        const task = /^\[([ xX])\]\s*(.*)$/.exec(body)
+        if (task) {
+          checked = task[1].toLowerCase() === 'x'
+          body = task[2]
+        }
+        i += 1
+        while (i < lines.length && !isBlank(lines[i]) && /^\s{2,}/.test(lines[i]) && !/^(\s*)([-*+]|\d{1,9}[.)])\s+/.test(lines[i])) {
+          body += ' ' + lines[i].trim()
+          i += 1
+        }
+        items.push({ checked, inline: parseInline(body) })
+      }
+      blocks.push({ type: 'list', ordered, start, items })
+      continue
+    }
+    const paragraph = []
+    while (i < lines.length && !isBlank(lines[i]) && (paragraph.length === 0 || !isBlockStart(lines, i))) {
+      paragraph.push(lines[i].trim())
+      i += 1
+    }
+    if (!paragraph.length) {
+      i += 1
+      continue
+    }
+    blocks.push({ type: 'paragraph', inline: parseInline(paragraph.join(' ')) })
+  }
+  return blocks
+}
+
+/* ── 渲染 ─────────────────────────────────────────────────── */
+
+function safeHref(href) {
+  const value = String(href == null ? '' : href).trim()
+  if (!value) return ''
+  if (/^(https?:|mailto:|#|\/|\.\.?\/)/i.test(value)) return value
+  if (/^[a-z0-9._~-]+(\/[^\s]*)?$/i.test(value)) return value
+  return ''
+}
+
+function renderInline(nodes, opts) {
+  const h = opts.h
+  const palette = opts.palette || {}
+  const accent = palette.accent || '#4f7cff'
+  const result = []
+  for (const node of nodes || []) {
+    if (node.type === 'text') result.push(node.value)
+    else if (node.type === 'code') {
+      result.push(
+        h('code', {
+          key: 'ic' + result.length,
+          style: {
+            padding: '1px 5px',
+            borderRadius: 4,
+            background: palette.codeBg || 'rgba(255,255,255,0.08)',
+            fontFamily: palette.mono || 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontSize: '0.92em',
+          },
+        }, node.value),
+      )
+    } else if (node.type === 'strong') {
+      result.push(h('strong', { key: 'b' + result.length, style: { fontWeight: 700 } }, renderInline(node.children, opts)))
+    } else if (node.type === 'em') {
+      result.push(h('em', { key: 'i' + result.length }, renderInline(node.children, opts)))
+    } else if (node.type === 'del') {
+      result.push(h('del', { key: 'd' + result.length, style: { opacity: 0.7 } }, renderInline(node.children, opts)))
+    } else if (node.type === 'link') {
+      const href = safeHref(node.href)
+      const children = renderInline(node.children, opts)
+      result.push(
+        href
+          ? h('a', {
+            key: 'a' + result.length,
+            href,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            style: { color: accent, textDecoration: 'underline' },
+          }, children)
+          : h('span', { key: 'a' + result.length }, children),
+      )
+    } else if (node.type === 'image') {
+      const src = safeHref(node.src)
+      result.push(
+        src
+          ? h('img', {
+            key: 'img' + result.length,
+            src,
+            alt: node.alt || '',
+            style: { maxWidth: '100%', borderRadius: 6, display: 'block', margin: '6px 0' },
+          })
+          : h('span', { key: 'img' + result.length }, node.alt || ''),
+      )
+    }
+  }
+  return result
+}
+
+function renderMarkdownBlocks(blocks, opts) {
+  const h = opts.h
+  const palette = opts.palette || {}
+  const fontSize = opts.fontSize || 14
+  const lineHeight = opts.lineHeight || 1.7
+  const textColor = palette.text || 'inherit'
+  const out = []
+  const list = Array.isArray(blocks) ? blocks : []
+  list.forEach(function renderBlock(block, index) {
+    const key = 'mb' + index
+    if (block.type === 'heading') {
+      const size = Math.round(fontSize * (HEADING_SIZES[block.level - 1] || 13) / 14)
+      out.push(
+        h('h' + block.level, {
+          key,
+          style: {
+            margin: index === 0 ? '0 0 8px' : '18px 0 8px',
+            fontSize: size,
+            fontWeight: 650,
+            lineHeight: 1.35,
+            color: textColor,
+          },
+        }, renderInline(block.inline, opts)),
+      )
+      return
+    }
+    if (block.type === 'paragraph') {
+      out.push(h('p', { key, style: { margin: '8px 0', lineHeight } }, renderInline(block.inline, opts)))
+      return
+    }
+    if (block.type === 'hr') {
+      out.push(h('hr', { key, style: { border: 'none', borderTop: '1px solid ' + (palette.line || 'rgba(255,255,255,0.12)'), margin: '14px 0' } }))
+      return
+    }
+    if (block.type === 'code') {
+      const children = []
+      if (block.lang) {
+        children.push(h('div', {
+          key: 'lang',
+          style: {
+            fontSize: 11,
+            color: palette.faint || 'rgba(255,255,255,0.45)',
+            fontFamily: palette.mono || 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            marginBottom: 6,
+          },
+        }, block.lang))
+      }
+      children.push(h('div', { key: 'body', style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, block.text))
+      out.push(h('pre', {
+        key,
+        style: {
+          margin: '10px 0',
+          padding: '10px 12px',
+          background: palette.codeBg || 'rgba(255,255,255,0.06)',
+          border: '1px solid ' + (palette.line || 'rgba(255,255,255,0.12)'),
+          borderRadius: 8,
+          overflowX: 'auto',
+          fontSize: 12,
+          lineHeight: '18px',
+          fontFamily: palette.mono || 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        },
+      }, children))
+      return
+    }
+    if (block.type === 'quote') {
+      out.push(
+        h('blockquote', {
+          key,
+          style: {
+            margin: '10px 0',
+            padding: '2px 14px',
+            borderLeft: '3px solid ' + (palette.accent || '#4f7cff'),
+            color: palette.sub || 'rgba(255,255,255,0.72)',
+          },
+        }, renderMarkdownBlocks(block.blocks, opts)),
+      )
+      return
+    }
+    if (block.type === 'list') {
+      const tag = block.ordered ? 'ol' : 'ul'
+      const style = { margin: '8px 0', paddingLeft: 22 }
+      if (block.ordered && block.start !== 1) style.start = block.start
+      if (block.items.some(function marked(item) { return item.checked !== null })) style.listStyleType = 'none'
+      out.push(
+        h(tag, { key, style },
+          block.items.map(function renderItem(item, itemIndex) {
+            const children = []
+            if (item.checked !== null) {
+              children.push(h('span', {
+                key: 'box',
+                'aria-hidden': true,
+                style: {
+                  display: 'inline-block',
+                  width: 14,
+                  marginRight: 6,
+                  color: item.checked ? (palette.accent || '#4f7cff') : (palette.faint || 'rgba(255,255,255,0.45)'),
+                },
+              }, item.checked ? '☑' : '☐'))
+            }
+            children.push(h('span', {
+              key: 'text',
+              style: item.checked === true ? { color: palette.sub || 'rgba(255,255,255,0.6)', textDecoration: 'line-through' } : null,
+            }, renderInline(item.inline, opts)))
+            return h('li', { key: 'li' + itemIndex, style: { margin: '3px 0', lineHeight } }, children)
+          })),
+      )
+      return
+    }
+    if (block.type === 'table') {
+      const cellStyle = {
+        padding: '6px 10px',
+        border: '1px solid ' + (palette.line || 'rgba(255,255,255,0.12)'),
+        verticalAlign: 'top',
+        lineHeight: 1.55,
+        textAlign: 'left',
+      }
+      const alignOf = function alignOf(cellIndex) {
+        const align = block.align[cellIndex]
+        return align ? { textAlign: align } : null
+      }
+      out.push(
+        h('div', { key, style: { overflowX: 'auto', margin: '10px 0' } },
+          h('table', { style: { borderCollapse: 'collapse', fontSize: Math.max(12, fontSize - 1), minWidth: 260 } },
+            h('thead', null,
+              h('tr', null,
+                block.header.map(function renderHeader(cell, cellIndex) {
+                  return h('th', {
+                    key: 'h' + cellIndex,
+                    style: Object.assign({}, cellStyle, alignOf(cellIndex), { background: palette.codeBg || 'rgba(255,255,255,0.06)', fontWeight: 600 }),
+                  }, renderInline(cell, opts))
+                }))),
+            h('tbody', null,
+              block.rows.map(function renderRow(row, rowIndex) {
+                return h('tr', { key: 'r' + rowIndex },
+                  block.header.map(function renderCell(cell, cellIndex) {
+                    return h('td', {
+                      key: 'c' + cellIndex,
+                      style: Object.assign({}, cellStyle, alignOf(cellIndex)),
+                    }, renderInline(row[cellIndex] || [], opts))
+                  }))
+              })))),
+      )
+    }
+  })
+  return out
+}
+
+/** 解析 + 渲染一步到位；调用方提供 h 与调色板。 */
+function renderMarkdown(text, opts) {
+  return renderMarkdownBlocks(parseMarkdown(text), opts)
+}
+
+const MARKDOWN_MAX_CHARS = MAX_MARKDOWN_CHARS
+
 /* ---- 00-core.js (242 lines) ---- */
 /* ═══════════════════════ M6 · V2 客户端公共层 ═══════════════════════ */
 /* 说明：本文件由 scripts/build-v2.mjs 内联到 client.js 的 V2-MODULES 区段；
@@ -9506,7 +10071,7 @@ function v2PageBgStyle(extra) {
   )
 }
 
-/* ---- 10-shell.js (1110 lines) ---- */
+/* ---- 10-shell.js (1611 lines) ---- */
 /* ═══════════════════════ M6 · V2 外壳 ═══════════════════════ */
 
 const V2_TAB_STORAGE_KEY = 'lifeos.v2.tab'
@@ -10351,8 +10916,57 @@ async function runM6SelfCheck(force) {
 }
 
 
-/* ── 全局快速记录：草稿自动保存（#15） ── */
+/* ── 全局快速记录：草稿自动保存（#15） + 分类选择（#21） ── */
 const V2_CAPTURE_DRAFT_KEY = 'lifeos.v2.captureDraft'
+const V2_CAPTURE_CLASSIFY_KEY = 'lifeos.v2.captureClassify'
+const V2_CAPTURE_WHEN_ITEMS = [
+  { id: null, label: '不指定' },
+  { id: 'today', label: '今天' },
+  { id: 'tomorrow', label: '明天' },
+  { id: 'next_week', label: '下周' },
+]
+
+/** 归一化分类选择：只保留已知字段，避免脏 localStorage 影响提交。 */
+function v2CaptureNormalizeClassify(value) {
+  const source = value && typeof value === 'object' ? value : {}
+  const when = V2_CAPTURE_WHEN_ITEMS.some(function match(item) { return item.id === source.when }) ? source.when : null
+  const tags = Array.isArray(source.tags)
+    ? source.tags
+      .map(function normalizeTag(tag) {
+        if (!tag || typeof tag !== 'object') return null
+        const name = String(tag.name || '').trim()
+        if (!name) return null
+        return { id: typeof tag.id === 'string' && tag.id ? tag.id : null, name: name }
+      })
+      .filter(Boolean)
+    : []
+  return {
+    listId: typeof source.listId === 'string' && source.listId ? source.listId : null,
+    groupId: typeof source.groupId === 'string' && source.groupId ? source.groupId : null,
+    tags: tags,
+    when: when,
+    time: /^\d{2}:\d{2}$/.test(String(source.time || '')) ? String(source.time) : '',
+    open: source.open === true,
+  }
+}
+
+function v2ReadCaptureClassify() {
+  try {
+    const raw = window.localStorage.getItem(V2_CAPTURE_CLASSIFY_KEY)
+    if (!raw) return v2CaptureNormalizeClassify(null)
+    return v2CaptureNormalizeClassify(JSON.parse(raw))
+  } catch (error) {
+    return v2CaptureNormalizeClassify(null)
+  }
+}
+
+function v2WriteCaptureClassify(classify) {
+  try {
+    window.localStorage.setItem(V2_CAPTURE_CLASSIFY_KEY, JSON.stringify(v2CaptureNormalizeClassify(classify)))
+  } catch (error) {
+    /* 忽略写入失败 */
+  }
+}
 
 function v2ReadCaptureDraft() {
   try {
@@ -10360,7 +10974,11 @@ function v2ReadCaptureDraft() {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed.text !== 'string') return null
-    return { text: parsed.text, target: parsed.target === 'note' ? 'note' : 'task' }
+    return {
+      text: parsed.text,
+      target: parsed.target === 'note' ? 'note' : 'task',
+      classify: parsed.classify ? v2CaptureNormalizeClassify(parsed.classify) : null,
+    }
   } catch (error) {
     return null
   }
@@ -10368,7 +10986,14 @@ function v2ReadCaptureDraft() {
 
 function v2WriteCaptureDraft(draft) {
   try {
-    window.localStorage.setItem(V2_CAPTURE_DRAFT_KEY, JSON.stringify({ text: String(draft.text || ''), target: draft.target === 'note' ? 'note' : 'task' }))
+    window.localStorage.setItem(
+      V2_CAPTURE_DRAFT_KEY,
+      JSON.stringify({
+        text: String(draft.text || ''),
+        target: draft.target === 'note' ? 'note' : 'task',
+        classify: v2CaptureNormalizeClassify(draft.classify),
+      }),
+    )
   } catch (error) {
     /* 忽略写入失败 */
   }
@@ -10382,6 +11007,108 @@ function v2ClearCaptureDraft() {
   }
 }
 
+/* ── 快速记录的分类提交（#21） ── */
+
+/** 分类里「今天/明天/下周」折算成本地日期键（自算，不依赖宿主全局日期函数）。 */
+function v2CaptureDateKeyAfter(days) {
+  const date = new Date()
+  date.setDate(date.getDate() + (Number(days) || 0))
+  const pad = function pad2(n) { return String(n).padStart(2, '0') }
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
+}
+
+function v2CaptureWhenDate(when) {
+  if (!when) return null
+  const days = when === 'today' ? 0 : when === 'tomorrow' ? 1 : when === 'next_week' ? 7 : null
+  if (days === null) return null
+  return v2CaptureDateKeyAfter(days)
+}
+
+function v2CaptureLocalDateTimeIso(dateKey, time) {
+  const parts = String(dateKey || '').split('-').map(Number)
+  const hm = String(time || '').split(':').map(Number)
+  if (parts.length !== 3 || parts.some(function bad(n) { return !Number.isFinite(n) })) return null
+  const date = new Date(parts[0], parts[1] - 1, parts[2], Number.isFinite(hm[0]) ? hm[0] : 0, Number.isFinite(hm[1]) ? hm[1] : 0, 0, 0)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString()
+}
+
+/** 标签按名称解析：已有就用，没有就建。 */
+async function v2CaptureResolveTags(tags, knownTags) {
+  const ids = []
+  for (const tag of Array.isArray(tags) ? tags : []) {
+    const name = String(tag && tag.name ? tag.name : '').trim()
+    if (!name) continue
+    if (tag.id) {
+      if (ids.indexOf(tag.id) < 0) ids.push(tag.id)
+      continue
+    }
+    const known = (Array.isArray(knownTags) ? knownTags : []).find(function find(item) {
+      return String(item.name || '').toLowerCase() === name.toLowerCase()
+    })
+    if (known && known.id) {
+      if (ids.indexOf(known.id) < 0) ids.push(known.id)
+      continue
+    }
+    const created = await apiRequest('/tags', { method: 'POST', body: JSON.stringify({ name: name }) })
+    const id = created && (created.tag ? created.tag.id : created.id)
+    if (id && ids.indexOf(id) < 0) ids.push(id)
+  }
+  return ids
+}
+
+function v2CaptureGroupName(meta, listId, groupId) {
+  if (!groupId) return ''
+  const group = ((meta && meta.groups) || []).find(function find(g) {
+    return g.id === groupId && (!listId || g.listId === listId)
+  })
+  return group ? group.name : ''
+}
+
+function v2CaptureListName(meta, listId) {
+  if (!listId) return '收集箱'
+  const list = ((meta && meta.lists) || []).find(function find(item) {
+    return item.id === listId
+  })
+  return list ? list.name : '收集箱'
+}
+
+function v2CaptureSummary(classify, meta) {
+  const parts = []
+  const groupName = v2CaptureGroupName(meta, classify.listId, classify.groupId)
+  if (classify.listId || groupName) {
+    parts.push(groupName ? v2CaptureListName(meta, classify.listId) + ' / ' + groupName : v2CaptureListName(meta, classify.listId))
+  }
+  if (classify.when) {
+    const whenLabel = V2_CAPTURE_WHEN_ITEMS.find(function find(item) { return item.id === classify.when })
+    parts.push((whenLabel ? whenLabel.label : '') + (classify.time ? ' ' + classify.time : ''))
+  }
+  if (classify.tags.length) parts.push(classify.tags.map(function tag(item) { return '#' + item.name }).join(' '))
+  return parts.join(' · ')
+}
+
+/** 按分类创建收集箱任务；未选择分类时等价于原来的「直接进收集箱」。 */
+async function v2CaptureSubmitTask(text, classify, meta) {
+  const body = { title: text }
+  if (classify.listId) body.listId = classify.listId
+  if (classify.groupId) body.groupId = classify.groupId
+  const tagIds = await v2CaptureResolveTags(classify.tags, meta && meta.tags)
+  if (tagIds.length) body.tagIds = tagIds
+  const dateKey = v2CaptureWhenDate(classify.when)
+  if (dateKey) {
+    if (classify.time) {
+      const iso = v2CaptureLocalDateTimeIso(dateKey, classify.time)
+      if (iso) body.scheduledStartAt = iso
+      else body.scheduledDate = dateKey
+    } else {
+      body.scheduledDate = dateKey
+    }
+  }
+  await apiRequest('/tasks', { method: 'POST', body: JSON.stringify(body) })
+  const summary = v2CaptureSummary(classify, meta)
+  return { kind: 'task', label: summary ? '已加入' + summary : '已加入收集箱' }
+}
+
 /* ── 全局快速记录浮层（DSH 对话页也使用 V2 样式与提交语义） ── */
 function V2HostCaptureDialog(props) {
   const closeCallback = props && typeof props.onClose === 'function' ? props.onClose : null
@@ -10393,12 +11120,24 @@ function V2HostCaptureDialog(props) {
   const [error, setError] = useState('')
   const [hintPulse, setHintPulse] = useState(false)
   const [draftRestored] = useState(!!(initialDraft && initialDraft.text.trim()))
+  const [classify, setClassify] = useState(function initClassify() {
+    const remembered = v2ReadCaptureClassify()
+    const fromDraft = initialDraft && initialDraft.classify ? initialDraft.classify : null
+    if (!fromDraft) return remembered
+    return Object.assign({}, remembered, fromDraft, { open: remembered.open === true })
+  })
+  const [meta, setMeta] = useState({ loaded: false, loading: false, lists: [], groups: [], tags: [], error: '' })
+  const [tagDraft, setTagDraft] = useState('')
   const textareaRef = useRef(null)
 
   useEffect(function persistDraft() {
-    if (String(text || '').trim()) v2WriteCaptureDraft({ text: text, target: target })
+    if (String(text || '').trim()) v2WriteCaptureDraft({ text: text, target: target, classify: classify })
     else v2ClearCaptureDraft()
-  }, [text, target])
+  }, [text, target, classify])
+
+  useEffect(function persistClassify() {
+    v2WriteCaptureClassify(classify)
+  }, [classify])
 
   useEffect(function focusOnOpen() {
     const timer = setTimeout(function focusLater() {
@@ -10426,13 +11165,92 @@ function V2HostCaptureDialog(props) {
     }
   }
 
+  function updateClassify(patch) {
+    setClassify(function merge(current) {
+      return v2CaptureNormalizeClassify(Object.assign({}, current, patch))
+    })
+  }
+
+  async function loadCaptureMeta() {
+    setMeta(function markLoading(current) {
+      return Object.assign({}, current, { loading: true })
+    })
+    try {
+      const listsValue = await apiRequest('/lists')
+      const tagsValue = await apiRequest('/tags')
+      const lists = (listsValue && listsValue.items) || []
+      const tags = (tagsValue && tagsValue.items) || []
+      const groupLists = await Promise.all(
+        lists.map(async function loadGroups(list) {
+          try {
+            const value = await apiRequest('/lists/' + encodeURIComponent(list.id) + '/groups')
+            return ((value && value.items) || []).map(function attach(g) {
+              return Object.assign({}, g, { listId: list.id })
+            })
+          } catch (inner) {
+            return []
+          }
+        }),
+      )
+      setMeta({
+        loaded: true,
+        loading: false,
+        lists: lists,
+        tags: tags,
+        groups: [].concat.apply([], groupLists),
+        error: '',
+      })
+    } catch (error) {
+      setMeta(function markError(current) {
+        return Object.assign({}, current, { loaded: true, loading: false, error: errorText(error) })
+      })
+    }
+  }
+
+  function toggleClassifyPanel() {
+    const next = classify.open !== true
+    updateClassify({ open: next })
+    if (next && !meta.loaded && !meta.loading) loadCaptureMeta()
+  }
+
+  function addTagDraft() {
+    const name = String(tagDraft || '').trim().replace(/^#/, '')
+    if (!name) return
+    const exists = classify.tags.some(function same(tag) {
+      return tag.name === name
+    })
+    if (!exists) {
+      const known = meta.tags.find(function find(t) {
+        return String(t.name || '').toLowerCase() === name.toLowerCase()
+      })
+      updateClassify({ tags: classify.tags.concat([{ id: known ? known.id : null, name: name }]) })
+    }
+    setTagDraft('')
+  }
+
+  function toggleTag(tag) {
+    const picked = classify.tags.some(function has(item) {
+      return item.name === tag.name
+    })
+    updateClassify({
+      tags: picked
+        ? classify.tags.filter(function drop(item) {
+          return item.name !== tag.name
+        })
+        : classify.tags.concat([{ id: tag.id, name: tag.name }]),
+    })
+  }
+
   async function submit() {
     const value = String(text || '').trim()
     if (!value || saving) return
     setSaving(true)
     setError('')
     try {
-      const result = await lifeosQuickCaptureSubmit(value, target)
+      const result =
+        target === 'task'
+          ? await v2CaptureSubmitTask(value, classify, meta)
+          : await lifeosQuickCaptureSubmit(value, target)
       if (result && result.label) runtime.toast('success', result.label)
       if (savedCallback) {
         try {
@@ -10476,6 +11294,217 @@ function V2HostCaptureDialog(props) {
     }
     event.preventDefault()
     submit()
+  }
+
+  function renderClassifyPanel() {
+    const panelStyle = {
+      marginTop: 2,
+      padding: '10px 12px',
+      borderRadius: 10,
+      border: '1px solid ' + V2.line,
+      background: 'rgba(255,255,255,0.02)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+    }
+    const labelStyle = { fontSize: v2fs(11), color: V2.faint, marginBottom: 4 }
+    const selectStyle = v2InputStyle({
+      fontSize: v2fs(12),
+      padding: '3px 8px',
+      height: 28,
+      background: V2_T.surface.input,
+      border: '1px solid ' + V2_T.border.subtle,
+      borderRadius: V2_T.radius.sm,
+    })
+    if (meta.loading && !meta.loaded) {
+      return h('div', { style: Object.assign({}, panelStyle, { color: V2.sub }) }, '正在读取清单与标签…')
+    }
+    if (meta.error) {
+      return h('div', { style: Object.assign({}, panelStyle, { color: V2.danger }) }, '分类信息加载失败：' + meta.error)
+    }
+    const groupOptions = meta.groups.filter(function ofList(group) {
+      return !classify.listId || group.listId === classify.listId
+    })
+    const pickedNames = classify.tags.map(function name(tag) { return tag.name })
+    const suggestionTags = meta.tags
+      .filter(function available(tag) { return pickedNames.indexOf(tag.name) < 0 })
+      .slice(0, 8)
+    return h(
+      'div',
+      { style: panelStyle },
+      h(
+        'div',
+        { style: { display: 'flex', gap: 10 } },
+        h(
+          'div',
+          { style: { flex: '1 1 0', minWidth: 0 } },
+          h('div', { style: labelStyle }, '清单'),
+          h(
+            'select',
+            {
+              value: classify.listId || '',
+              'aria-label': '清单',
+              onChange: function onChange(event) {
+                updateClassify({ listId: event.target.value || null, groupId: null })
+              },
+              style: Object.assign({}, selectStyle, { width: '100%' }),
+            },
+            h('option', { value: '' }, '收集箱'),
+            meta.lists.map(function map(list) {
+              return h('option', { key: list.id, value: list.id }, list.name)
+            }),
+          ),
+        ),
+        h(
+          'div',
+          { style: { flex: '1 1 0', minWidth: 0 } },
+          h('div', { style: labelStyle }, '分组'),
+          h(
+            'select',
+            {
+              value: classify.groupId || '',
+              'aria-label': '分组',
+              disabled: groupOptions.length === 0,
+              onChange: function onChange(event) {
+                updateClassify({ groupId: event.target.value || null })
+              },
+              style: Object.assign({}, selectStyle, { width: '100%' }),
+            },
+            h('option', { value: '' }, groupOptions.length ? '不分组' : '该清单没有分组'),
+            groupOptions.map(function map(group) {
+              return h('option', { key: group.id, value: group.id }, group.name)
+            }),
+          ),
+        ),
+      ),
+      h(
+        'div',
+        null,
+        h('div', { style: labelStyle }, '时间'),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+          h(
+            'div',
+            { style: { display: 'flex', gap: 2, border: '1px solid ' + V2.line, borderRadius: 8, padding: 2 } },
+            V2_CAPTURE_WHEN_ITEMS.map(function map(item) {
+              const active = classify.when === item.id
+              return h(
+                'button',
+                {
+                  key: item.id || 'none',
+                  type: 'button',
+                  onClick: function onClick() {
+                    updateClassify({ when: item.id })
+                  },
+                  style: {
+                    padding: '3px 8px',
+                    borderRadius: 6,
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: active ? V2.hover : 'transparent',
+                    color: active ? V2.text : V2.sub,
+                    fontFamily: COLORS.fontFamily,
+                    fontSize: v2fs(12),
+                  },
+                },
+                item.label,
+              )
+            }),
+          ),
+          h('input', {
+            type: 'time',
+            value: classify.time,
+            'aria-label': '具体时间',
+            disabled: !classify.when,
+            onChange: function onChange(event) {
+              updateClassify({ time: event.target.value })
+            },
+            style: Object.assign({}, selectStyle, { width: 92, opacity: classify.when ? 1 : 0.45 }),
+          }),
+        ),
+      ),
+      h(
+        'div',
+        null,
+        h('div', { style: labelStyle }, '标签'),
+        classify.tags.length
+          ? h(
+            'div',
+            { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 } },
+            classify.tags.map(function picked(tag) {
+              return h(
+                'span',
+                {
+                  key: 'picked-' + tag.name,
+                  style: {
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontSize: v2fs(11),
+                    padding: '2px 8px',
+                    borderRadius: V2_T.radius.pill,
+                    background: V2_T.accent.soft,
+                    border: '1px solid ' + V2_T.accent.line,
+                    color: V2.text,
+                  },
+                },
+                '#' + tag.name,
+                h('button', {
+                  type: 'button',
+                  title: '移除标签',
+                  onClick: function onClick() {
+                    updateClassify({
+                      tags: classify.tags.filter(function keep(item) { return item.name !== tag.name }),
+                    })
+                  },
+                  style: { border: 'none', background: 'transparent', color: V2.sub, cursor: 'pointer', padding: 0, fontSize: v2fs(11) },
+                }, '×'),
+              )
+            }),
+          )
+          : null,
+        h('input', {
+          type: 'text',
+          value: tagDraft,
+          'aria-label': '新标签',
+          placeholder: '输入标签名，Enter 添加',
+          onChange: function onChange(event) {
+            setTagDraft(event.target.value)
+          },
+          onKeyDown: function onKeyDown(event) {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            event.stopPropagation()
+            addTagDraft()
+          },
+          style: Object.assign({}, selectStyle, { width: '100%' }),
+        }),
+        suggestionTags.length
+          ? h(
+            'div',
+            { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
+            suggestionTags.map(function suggest(tag) {
+              return h('button', {
+                key: 'suggest-' + tag.id,
+                type: 'button',
+                onClick: function onClick() { toggleTag(tag) },
+                style: {
+                  padding: '2px 8px',
+                  borderRadius: V2_T.radius.pill,
+                  border: '1px solid ' + V2_T.border.subtle,
+                  background: 'transparent',
+                  color: V2.text.secondary,
+                  cursor: 'pointer',
+                  fontSize: v2fs(11),
+                  fontFamily: COLORS.fontFamily,
+                },
+              }, '#' + tag.name)
+            }),
+          )
+          : null,
+      ),
+    )
   }
 
   return h(
@@ -10570,6 +11599,43 @@ function V2HostCaptureDialog(props) {
           )
         }),
       ),
+      target === 'task'
+        ? h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 24 } },
+          h(
+            'button',
+            {
+              type: 'button',
+              onClick: toggleClassifyPanel,
+              'aria-expanded': classify.open === true ? 'true' : 'false',
+              title: '选择清单、分组、标签与时间',
+              style: Object.assign({}, v2BtnStyle('ghost'), {
+                padding: '2px 8px',
+                fontSize: v2fs(12),
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                color: v2CaptureSummary(classify, meta) ? V2.text : V2.sub,
+              }),
+            },
+            h(V2Icon, { name: 'filter', size: 12 }),
+            v2CaptureSummary(classify, meta) || '分类',
+            h(V2Icon, { name: classify.open ? 'chevronDown' : 'chevronRight', size: 11 }),
+          ),
+          v2CaptureSummary(classify, meta)
+            ? h('button', {
+              type: 'button',
+              title: '清除分类',
+              onClick: function onClick() {
+                updateClassify({ listId: null, groupId: null, tags: [], when: null, time: '' })
+              },
+              style: Object.assign({}, v2BtnStyle('ghost'), { padding: '2px 6px', fontSize: v2fs(11) }),
+            }, '清除')
+            : null,
+        )
+        : null,
+      target === 'task' && classify.open === true ? renderClassifyPanel() : null,
       h('textarea', {
         ref: textareaRef,
         autoFocus: true,
@@ -25334,7 +26400,7 @@ function HabitTabV2(props) {
   )
 }
 
-/* ---- 50-notes.js (3618 lines) ---- */
+/* ---- 50-notes.js (3789 lines) ---- */
 /* ═══════════════════════ M6 · V2 笔记 Tab ═══════════════════════ */
 /* NotesTabV2：左侧文件树（日记/随记快捷分组 + 最近 5 条 + 完整工作区目录树 +
    搜索 / 新建 / 多选 / 拖拽移动）+ 右侧 Markdown 编辑器（自动保存、预览、标签、冲突提示）。
@@ -26177,6 +27243,49 @@ function V2NotesSetupGuide(props) {
 
 /* ---------------- 主组件 ---------------- */
 
+/* M19 #20：任务 ⇄ Markdown 的辅助函数（导入报告与导出文件名）。 */
+function v2NotesDateKey(date) {
+  const value = date instanceof Date ? date : new Date()
+  const pad = function pad(n) { return (n < 10 ? '0' : '') + n }
+  return String(value.getFullYear()) + '-' + pad(value.getMonth() + 1) + '-' + pad(value.getDate())
+}
+
+function v2NotesImportReportLines(report) {
+  const source = report && typeof report === 'object' ? report : {}
+  const lines = []
+  const total = Number(source.total || 0)
+  const created = Number(source.created || 0)
+  const updated = Number(source.updated || 0)
+  const skipped = Number(source.skipped || 0)
+  const errors = Array.isArray(source.errors) ? source.errors.filter(Boolean) : []
+  lines.push('共 ' + total + ' 行任务：新建 ' + created + '、更新 ' + updated + '、跳过 ' + skipped + (errors.length ? '、失败 ' + errors.length : ''))
+  const pending = []
+  const names = function names(list) {
+    return Array.isArray(list) ? list.filter(function keep(item) { return typeof item === 'string' && item.trim() !== '' }) : []
+  }
+  const lists = names(source.createdLists)
+  const groups = names(source.createdGroups)
+  const tags = names(source.createdTags)
+  if (lists.length) pending.push('新建清单：' + lists.join('、'))
+  if (groups.length) pending.push('新建分组：' + groups.join('、'))
+  if (tags.length) pending.push('新建标签：' + tags.map(function mark(name) { return '#' + name }).join('、'))
+  pending.forEach(function push(line) { lines.push(line) })
+  const unknown = Array.isArray(source.unknown) ? source.unknown : []
+  if (unknown.length) {
+    const shown = unknown.slice(0, 5).map(function brief(item) {
+      const key = item && item.key ? '@' + item.key : '未知注解'
+      return key + (item && item.reason ? '（' + item.reason + '）' : '')
+    })
+    lines.push('未识别注解 ' + unknown.length + ' 处：' + shown.join('、') + (unknown.length > shown.length ? ' 等' : '') + '；原文已保留在标题里。')
+  }
+  const skippedLines = Array.isArray(source.skippedLines) ? source.skippedLines : []
+  if (skippedLines.length) {
+    const shown = skippedLines.slice(0, 3).map(function brief(item) { return '第 ' + (item && item.line ? item.line : '?') + ' 行 ' + (item && item.reason ? item.reason : '已跳过') })
+    lines.push('跳过明细：' + shown.join('；') + (skippedLines.length > shown.length ? ' 等' : ''))
+  }
+  errors.slice(0, 3).forEach(function push(message) { lines.push('失败：' + message) })
+  return lines
+}
 function NotesTabV2(props) {
   const runtime = props.runtime
   const notes = props.notes
@@ -26705,6 +27814,93 @@ function NotesTabV2(props) {
     }
   }
 
+  /* ---------- M19 #20：任务 ⇄ Markdown ---------- */
+
+  async function exportTasksToNote() {
+    const dir = currentDir()
+    try {
+      await syncTree()
+      const payload = await apiRequest('/markdown/tasks?includeDone=1')
+      const markdown = String((payload && payload.markdown) || '')
+      if (!markdown.trim()) {
+        notify('error', '没有可导出的任务')
+        return
+      }
+      const name = v2NotesUniqueName('任务导出-' + v2NotesDateKey() + '.md', function exists(candidate) {
+        return fileExistsIn(dir, candidate)
+      })
+      const path = v2NotesJoin(dir, name)
+      markSelfWrite(path)
+      await notes.createNote(dir, name)
+      notes.editContent(markdown)
+      await notes.saveNow(true)
+      markSelfWrite(path)
+      expandAncestors(path)
+      notify('success', '已导出 ' + Number((payload && payload.count) || 0) + ' 个任务到 ' + name)
+    } catch (error) {
+      notify('error', '导出任务失败：' + errorText(error))
+    }
+  }
+
+  async function prepareTasksImport() {
+    const content = String((readState().doc || {}).content || '')
+    if (!content.trim()) {
+      notify('info', '当前笔记没有内容')
+      return
+    }
+    try {
+      const report = await apiRequest('/markdown/tasks/import', {
+        method: 'POST',
+        body: JSON.stringify({ text: content, dryRun: true }),
+      })
+      if (!report || !Number(report.total || 0)) {
+        notify('info', '当前笔记里没有任务行（需要 - [ ] 开头的列表）')
+        return
+      }
+      setDialog({ kind: 'import-tasks', text: content, report: report })
+    } catch (error) {
+      notify('error', '解析 Markdown 失败：' + errorText(error))
+    }
+  }
+
+  async function submitTasksImport(text) {
+    try {
+      const report = await apiRequest('/markdown/tasks/import', {
+        method: 'POST',
+        body: JSON.stringify({ text: text, dryRun: false }),
+      })
+      setDialog(null)
+      notify(
+        'success',
+        '已导入：新建 ' + Number((report && report.created) || 0) + '、更新 ' + Number((report && report.updated) || 0) + '、跳过 ' + Number((report && report.skipped) || 0),
+      )
+    } catch (error) {
+      notify('error', '导入失败：' + errorText(error))
+    }
+  }
+
+  function renderTasksImportReport(report) {
+    const lines = v2NotesImportReportLines(report)
+    return h(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' } },
+      lines.map(function row(line, index) {
+        return h(
+          'div',
+          {
+            key: 'report-' + index,
+            style: {
+              fontSize: 12.5,
+              lineHeight: '19px',
+              color: index === 0 ? V2_T.text.primary : V2_T.text.secondary,
+              fontWeight: index === 0 ? 600 : 400,
+            },
+          },
+          line,
+        )
+      }),
+    )
+  }
   async function submitNewFolder(parentDir, rawName) {
     setDialog(null)
     const name = v2NotesSanitizeName(rawName, '')
@@ -27083,6 +28279,9 @@ function NotesTabV2(props) {
       { label: '重命名', icon: 'edit', onClick: function onClick() { setDialog({ kind: 'rename-note', initial: v2NotesStripExt(doc.name) }) } },
       { label: '移动到文件夹', icon: 'move', onClick: function onClick() { setDialog({ kind: 'move-paths', paths: [path], initialDir: v2NotesDirName(path) }) } },
       { label: '添加标签', icon: 'tag', onClick: function onClick() { setTagEditing(true) } },
+      { type: 'separator' },
+      { label: '导出任务到笔记', icon: 'file', onClick: function onClick() { runNotesAction(exportTasksToNote, '导出任务失败') } },
+      { label: '从当前笔记导入任务', icon: 'list', onClick: function onClick() { prepareTasksImport() } },
       { type: 'separator' },
       { label: '立即保存', icon: 'check', onClick: function onClick() { saveNow(true) } },
       { label: '创建快照', icon: 'clock', onClick: snapshotNow },
@@ -28214,7 +29413,20 @@ function NotesTabV2(props) {
         h(
           'div',
           { style: { maxWidth: 820, margin: '0 auto', fontSize: notesFontSize, lineHeight: '1.7', color: V2_T.text.primary } },
-          renderMarkdownPreview(content),
+          renderMarkdown(content, {
+            h: h,
+            fontSize: notesFontSize,
+            lineHeight: 1.7,
+            palette: {
+              text: V2_T.text.primary,
+              sub: V2_T.text.secondary,
+              faint: V2_T.text.tertiary,
+              line: V2_T.border.subtle,
+              accent: V2_T.accent.base,
+              codeBg: V2_T.surface.panel2,
+              mono: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            },
+          }),
         ),
       )
     }
@@ -28505,7 +29717,32 @@ function NotesTabV2(props) {
         onCancel: closeDialog,
       })
     }
-    if (dialog.kind === 'batch-tag') {
+    if (dialog.kind === 'import-tasks') {
+      const report = dialog.report || {}
+      const actionable = Number(report.created || 0) + Number(report.updated || 0)
+      const footer = h(
+        'div',
+        { style: { display: 'flex', gap: 8 } },
+        h('button', { key: 'cancel', type: 'button', onClick: closeDialog, style: v2NotesBtnStyle('ghost', { fontSize: 11 }) }, '取消'),
+        h(
+          'button',
+          {
+            key: 'ok',
+            type: 'button',
+            disabled: actionable <= 0,
+            onClick: function onClick() { submitTasksImport(dialog.text) },
+            style: v2NotesBtnStyle('primary', { fontSize: 11, opacity: actionable > 0 ? 1 : 0.5 }),
+          },
+          '确认导入',
+        ),
+      )
+      return h(
+        V2NotesModal,
+        { key: 'dlg-import-tasks', title: '导入任务预览', width: 520, onCancel: closeDialog, footer: footer },
+        renderTasksImportReport(report),
+        h('div', { style: { fontSize: 11.5, color: V2_T.text.tertiary } }, '以上为预演结果，确认后才会写入任务。'),
+      )
+    }    if (dialog.kind === 'batch-tag') {
       return h(V2NotesPrompt, {
         key: 'dlg-batch-tag',
         title: '添加标签',

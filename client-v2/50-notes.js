@@ -840,6 +840,49 @@ function V2NotesSetupGuide(props) {
 
 /* ---------------- 主组件 ---------------- */
 
+/* M19 #20：任务 ⇄ Markdown 的辅助函数（导入报告与导出文件名）。 */
+function v2NotesDateKey(date) {
+  const value = date instanceof Date ? date : new Date()
+  const pad = function pad(n) { return (n < 10 ? '0' : '') + n }
+  return String(value.getFullYear()) + '-' + pad(value.getMonth() + 1) + '-' + pad(value.getDate())
+}
+
+function v2NotesImportReportLines(report) {
+  const source = report && typeof report === 'object' ? report : {}
+  const lines = []
+  const total = Number(source.total || 0)
+  const created = Number(source.created || 0)
+  const updated = Number(source.updated || 0)
+  const skipped = Number(source.skipped || 0)
+  const errors = Array.isArray(source.errors) ? source.errors.filter(Boolean) : []
+  lines.push('共 ' + total + ' 行任务：新建 ' + created + '、更新 ' + updated + '、跳过 ' + skipped + (errors.length ? '、失败 ' + errors.length : ''))
+  const pending = []
+  const names = function names(list) {
+    return Array.isArray(list) ? list.filter(function keep(item) { return typeof item === 'string' && item.trim() !== '' }) : []
+  }
+  const lists = names(source.createdLists)
+  const groups = names(source.createdGroups)
+  const tags = names(source.createdTags)
+  if (lists.length) pending.push('新建清单：' + lists.join('、'))
+  if (groups.length) pending.push('新建分组：' + groups.join('、'))
+  if (tags.length) pending.push('新建标签：' + tags.map(function mark(name) { return '#' + name }).join('、'))
+  pending.forEach(function push(line) { lines.push(line) })
+  const unknown = Array.isArray(source.unknown) ? source.unknown : []
+  if (unknown.length) {
+    const shown = unknown.slice(0, 5).map(function brief(item) {
+      const key = item && item.key ? '@' + item.key : '未知注解'
+      return key + (item && item.reason ? '（' + item.reason + '）' : '')
+    })
+    lines.push('未识别注解 ' + unknown.length + ' 处：' + shown.join('、') + (unknown.length > shown.length ? ' 等' : '') + '；原文已保留在标题里。')
+  }
+  const skippedLines = Array.isArray(source.skippedLines) ? source.skippedLines : []
+  if (skippedLines.length) {
+    const shown = skippedLines.slice(0, 3).map(function brief(item) { return '第 ' + (item && item.line ? item.line : '?') + ' 行 ' + (item && item.reason ? item.reason : '已跳过') })
+    lines.push('跳过明细：' + shown.join('；') + (skippedLines.length > shown.length ? ' 等' : ''))
+  }
+  errors.slice(0, 3).forEach(function push(message) { lines.push('失败：' + message) })
+  return lines
+}
 function NotesTabV2(props) {
   const runtime = props.runtime
   const notes = props.notes
@@ -1368,6 +1411,93 @@ function NotesTabV2(props) {
     }
   }
 
+  /* ---------- M19 #20：任务 ⇄ Markdown ---------- */
+
+  async function exportTasksToNote() {
+    const dir = currentDir()
+    try {
+      await syncTree()
+      const payload = await apiRequest('/markdown/tasks?includeDone=1')
+      const markdown = String((payload && payload.markdown) || '')
+      if (!markdown.trim()) {
+        notify('error', '没有可导出的任务')
+        return
+      }
+      const name = v2NotesUniqueName('任务导出-' + v2NotesDateKey() + '.md', function exists(candidate) {
+        return fileExistsIn(dir, candidate)
+      })
+      const path = v2NotesJoin(dir, name)
+      markSelfWrite(path)
+      await notes.createNote(dir, name)
+      notes.editContent(markdown)
+      await notes.saveNow(true)
+      markSelfWrite(path)
+      expandAncestors(path)
+      notify('success', '已导出 ' + Number((payload && payload.count) || 0) + ' 个任务到 ' + name)
+    } catch (error) {
+      notify('error', '导出任务失败：' + errorText(error))
+    }
+  }
+
+  async function prepareTasksImport() {
+    const content = String((readState().doc || {}).content || '')
+    if (!content.trim()) {
+      notify('info', '当前笔记没有内容')
+      return
+    }
+    try {
+      const report = await apiRequest('/markdown/tasks/import', {
+        method: 'POST',
+        body: JSON.stringify({ text: content, dryRun: true }),
+      })
+      if (!report || !Number(report.total || 0)) {
+        notify('info', '当前笔记里没有任务行（需要 - [ ] 开头的列表）')
+        return
+      }
+      setDialog({ kind: 'import-tasks', text: content, report: report })
+    } catch (error) {
+      notify('error', '解析 Markdown 失败：' + errorText(error))
+    }
+  }
+
+  async function submitTasksImport(text) {
+    try {
+      const report = await apiRequest('/markdown/tasks/import', {
+        method: 'POST',
+        body: JSON.stringify({ text: text, dryRun: false }),
+      })
+      setDialog(null)
+      notify(
+        'success',
+        '已导入：新建 ' + Number((report && report.created) || 0) + '、更新 ' + Number((report && report.updated) || 0) + '、跳过 ' + Number((report && report.skipped) || 0),
+      )
+    } catch (error) {
+      notify('error', '导入失败：' + errorText(error))
+    }
+  }
+
+  function renderTasksImportReport(report) {
+    const lines = v2NotesImportReportLines(report)
+    return h(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' } },
+      lines.map(function row(line, index) {
+        return h(
+          'div',
+          {
+            key: 'report-' + index,
+            style: {
+              fontSize: 12.5,
+              lineHeight: '19px',
+              color: index === 0 ? V2_T.text.primary : V2_T.text.secondary,
+              fontWeight: index === 0 ? 600 : 400,
+            },
+          },
+          line,
+        )
+      }),
+    )
+  }
   async function submitNewFolder(parentDir, rawName) {
     setDialog(null)
     const name = v2NotesSanitizeName(rawName, '')
@@ -1746,6 +1876,9 @@ function NotesTabV2(props) {
       { label: '重命名', icon: 'edit', onClick: function onClick() { setDialog({ kind: 'rename-note', initial: v2NotesStripExt(doc.name) }) } },
       { label: '移动到文件夹', icon: 'move', onClick: function onClick() { setDialog({ kind: 'move-paths', paths: [path], initialDir: v2NotesDirName(path) }) } },
       { label: '添加标签', icon: 'tag', onClick: function onClick() { setTagEditing(true) } },
+      { type: 'separator' },
+      { label: '导出任务到笔记', icon: 'file', onClick: function onClick() { runNotesAction(exportTasksToNote, '导出任务失败') } },
+      { label: '从当前笔记导入任务', icon: 'list', onClick: function onClick() { prepareTasksImport() } },
       { type: 'separator' },
       { label: '立即保存', icon: 'check', onClick: function onClick() { saveNow(true) } },
       { label: '创建快照', icon: 'clock', onClick: snapshotNow },
@@ -2877,7 +3010,20 @@ function NotesTabV2(props) {
         h(
           'div',
           { style: { maxWidth: 820, margin: '0 auto', fontSize: notesFontSize, lineHeight: '1.7', color: V2_T.text.primary } },
-          renderMarkdownPreview(content),
+          renderMarkdown(content, {
+            h: h,
+            fontSize: notesFontSize,
+            lineHeight: 1.7,
+            palette: {
+              text: V2_T.text.primary,
+              sub: V2_T.text.secondary,
+              faint: V2_T.text.tertiary,
+              line: V2_T.border.subtle,
+              accent: V2_T.accent.base,
+              codeBg: V2_T.surface.panel2,
+              mono: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            },
+          }),
         ),
       )
     }
@@ -3168,7 +3314,32 @@ function NotesTabV2(props) {
         onCancel: closeDialog,
       })
     }
-    if (dialog.kind === 'batch-tag') {
+    if (dialog.kind === 'import-tasks') {
+      const report = dialog.report || {}
+      const actionable = Number(report.created || 0) + Number(report.updated || 0)
+      const footer = h(
+        'div',
+        { style: { display: 'flex', gap: 8 } },
+        h('button', { key: 'cancel', type: 'button', onClick: closeDialog, style: v2NotesBtnStyle('ghost', { fontSize: 11 }) }, '取消'),
+        h(
+          'button',
+          {
+            key: 'ok',
+            type: 'button',
+            disabled: actionable <= 0,
+            onClick: function onClick() { submitTasksImport(dialog.text) },
+            style: v2NotesBtnStyle('primary', { fontSize: 11, opacity: actionable > 0 ? 1 : 0.5 }),
+          },
+          '确认导入',
+        ),
+      )
+      return h(
+        V2NotesModal,
+        { key: 'dlg-import-tasks', title: '导入任务预览', width: 520, onCancel: closeDialog, footer: footer },
+        renderTasksImportReport(report),
+        h('div', { style: { fontSize: 11.5, color: V2_T.text.tertiary } }, '以上为预演结果，确认后才会写入任务。'),
+      )
+    }    if (dialog.kind === 'batch-tag') {
       return h(V2NotesPrompt, {
         key: 'dlg-batch-tag',
         title: '添加标签',
