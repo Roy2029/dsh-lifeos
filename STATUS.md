@@ -9,7 +9,7 @@
 - Phase: done
 - Tests: 643
 - Last verified: 2026-11-26
-- Last verified commit: 2730f74
+- Last verified commit: 6ee841f
 - OpenSpec: optional
 
 ## Now
