@@ -5,7 +5,7 @@
 > `partial` rows require a note describing what remains.
 
 Source: 2026-11-24 product feedback (32 items). Decisions are reflected in the
-Status/Milestone columns and in `docs/plans/archive/M18-PLAN.md`; this table is the
+Status/Milestone columns and in `docs/plans/archive/M19-PLAN.md`; this table is the
 repository's only tracking copy.
 
 | ID | Item | Status | Milestone | Evidence |
@@ -29,10 +29,10 @@ repository's only tracking copy.
 | #17 | Distinguish multi-select checkbox from complete checkbox | done | M15 | 6e70593 |
 | #18 | Calendar task properties use full task detail; task bar grouping/sorting | partial | M16 | 563fc2f compact Cal2TaskModal; bar supports list/group + date/priority/created/custom, missing title/tag/modified sorts |
 | #19 | Quick time options (today / tomorrow / next week) | done | M16 | f0bf2f8 |
-| #20 | Markdown import/export with `@` annotation mapping | todo | M19 | spec first; design decision recorded 2026-11-25 |
-| #21 | Quick capture category panel (list/group/tag/time) | todo | M19 | — |
+| #20 | Markdown import/export with `@` annotation mapping | done | M19 | M19: task ⇄ Markdown round trip with dryRun preview; docs/plans/archive/M19-PLAN.md; docs/images/m19-task-import-report.png |
+| #21 | Quick capture category panel (list/group/tag/time) | done | M19 | M19: capture panel + draft persistence; docs/images/m19-capture-panel.png |
 | #22 | New daily note must not report external modification | done | M15 | 6e70593 |
-| #23 | Markdown rendering: links, images, tables, task lists, code blocks | todo | M19 | — |
+| #23 | Markdown rendering: links, images, tables, task lists, code blocks | done | M19 | M19: shared parser src/client-shared/markdown.js; docs/images/m19-markdown-preview.png |
 | #24 | Overdue semantics (cancel / postpone / stats) | deferred | — | awaiting research |
 | #25 | Note path_exists check, dedupe tree, single toast | done | M15 | 6e70593 |
 | #26 | Five UI font sizes | done | M15 | 6e70593 |

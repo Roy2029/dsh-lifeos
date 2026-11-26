@@ -656,6 +656,9 @@ export function createLifeosService(deps) {
     updateGroup: taskOps.updateGroup,
     deleteGroup: taskOps.deleteGroup,
     reorderGroups: taskOps.reorderGroups,
+    // M19 #20 任务 ⇄ Markdown
+    exportTasksMarkdown: taskOps.exportTasksMarkdown,
+    importTasksMarkdown: taskOps.importTasksMarkdown,
     // M6 笔记标签（v0.8）
     getNotesTags: notesTagOps.getNotesTags,
     putNotesTags: notesTagOps.putNotesTags,

@@ -4,22 +4,22 @@
 > README.md is the stable user-facing overview; do not duplicate volatile numbers there.
 
 - Project: LifeOS
-- Version: 0.2.0
-- Milestone: M18 — 习惯体系（habit_group + 图标/标题）
+- Version: 0.3.0
+- Milestone: M19 — 笔记 Markdown 与导入导出
 - Phase: done
-- Tests: 643
+- Tests: 680
 - Last verified: 2026-11-26
-- Last verified commit: 6ee841f
+- Last verified commit: 3ee358b
 - OpenSpec: optional
 
 ## Now
 
-- M18（习惯分组 / emoji 图标 / inline 标题 / schema v4）已完成并通过验收，计划归档到 `docs/plans/archive/M18-PLAN.md`，截图见 `docs/images/m18-habits-*.png`。
+- M19（完整 Markdown 预览、快速记录分类面板、任务 ⇄ Markdown 双向导入导出）已完成并通过验收，计划归档到 `docs/plans/archive/M19-PLAN.md`，截图见 `docs/images/m19-*.png`。
 
 ## Next
 
-- 进入 M19：笔记 Markdown 与导入导出（#20 / #21 / #23），先出计划再动工。
-- 视需要为 M19 建 OpenSpec change，先不批量 backfill 历史里程碑。
+- 按 backlog 剩余项收尾：M15/M16 的 partial 行（#3/#4/#8/#14/#15/#18）逐条确认是否继续做，先出计划再动工。
+- M20 候选：周起始日与农历/节假日（未排期）、项目与回顾工作区回归（未排期）。
 
 ## Decisions needed
 

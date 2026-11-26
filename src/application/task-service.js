@@ -13,7 +13,8 @@
 
 import { LifeosError } from './errors.js';
 import { normalizeRepeatRule } from '../domain/task.js';
-import { taskAnchorLocalDate } from '../domain/time.js';
+import { localDateOfIso, localDateTimeToIso, taskAnchorLocalDate } from '../domain/time.js';
+import { formatTasksMarkdown, parseTasksMarkdown, repeatMarkOf } from '../domain/task-markdown.js';
 import {
   applyAction,
   assertTransition,
@@ -1928,6 +1929,255 @@ export function createTaskOps(deps) {
     return { prefs: {}, rev: 1 };
   }
 
+  /* ── M19 #20：任务 ⇄ Markdown ─────────────────────────────── */
+
+  /** UTC ISO → 本地 `HH:mm`（导出注解用；失败返回 null）。 */
+  function localTimeOfIso(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+    const hour = parts.find((part) => part.type === 'hour');
+    const minute = parts.find((part) => part.type === 'minute');
+    if (!hour || !minute) return null;
+    return hour.value + ':' + minute.value;
+  }
+
+  /** 任务记录 → Markdown 行数据（名称全部解析成文本，导出文件自带上下文）。 */
+  function taskMarkdownRow(task, ctx) {
+    const list = task.list_id ? ctx.lists.get(task.list_id) : null;
+    const group = task.group_id ? ctx.groups.get(task.group_id) : null;
+    const tagIds = ctx.tagsByTask.get(task.id) || [];
+    const tags = tagIds.map((tagId) => ctx.tags.get(tagId)).filter(Boolean).map((tag) => tag.name);
+    const startIso = task.scheduled_start_at || null;
+    const dueIso = task.due_at || null;
+    const startDate = task.scheduled_date ?? (startIso ? localDateOfIso(timeZone, startIso) : null);
+    const dueDate = task.due_date ?? (dueIso ? localDateOfIso(timeZone, dueIso) : null);
+    return {
+      title: task.title,
+      done: task.status === 'done',
+      listName: list ? list.name : null,
+      groupName: group ? group.name : null,
+      startDate,
+      dueDate,
+      time: startIso ? localTimeOfIso(startIso) : dueIso ? localTimeOfIso(dueIso) : null,
+      doneDate: task.completed_at ? localDateOfIso(timeZone, task.completed_at) : null,
+      priority: task.priority ?? 'none',
+      tags,
+      repeatMark: repeatMarkOf(task.repeat_rule),
+      id: task.id,
+    };
+  }
+
+  /**
+   * 导出任务为带 `@` 注解的 Markdown。
+   *
+   * @param {{includeDone?: boolean, includeCancelled?: boolean}} [input]
+   */
+  function exportTasksMarkdown(input = {}) {
+    const includeDone = input.includeDone !== false;
+    const includeCancelled = input.includeCancelled === true;
+    const ctx = snapshot();
+    const lists = allLists();
+    const groups = allGroups();
+    const context = {
+      ...ctx,
+      lists: new Map(lists.map((list) => [list.id, list])),
+      groups: new Map(groups.map((group) => [group.id, group])),
+    };
+    const rows = ctx.tasks
+      .filter((task) => !task.archived_at)
+      .filter((task) => (includeDone ? true : task.status !== 'done'))
+      .filter((task) => (includeCancelled ? true : task.status !== 'cancelled'))
+      .sort((a, b) => {
+        const listA = a.list_id ?? '';
+        const listB = b.list_id ?? '';
+        if (listA !== listB) return listA < listB ? -1 : 1;
+        return sortDefault(a, b);
+      })
+      .map((task) => taskMarkdownRow(task, context));
+    return {
+      markdown: formatTasksMarkdown(rows, { generatedAt: ctx.nowIso }),
+      count: rows.length,
+      today: ctx.todayLocal,
+    };
+  }
+
+  /**
+   * Markdown → 任务（两阶段：`dryRun` 只报告不写库）。
+   *
+   * 去重：同「清单 + 标题 + 截止日期」已存在 → 跳过并计入 `skipped`；
+   * 带 `@id(tsk_...)` 时按 id 更新（用当前 rev 做乐观并发）。
+   *
+   * @param {{text: string, dryRun?: boolean}} input
+   */
+  async function importTasksMarkdown(input = {}) {
+    assertWritable();
+    const text = typeof input.text === 'string' ? input.text : '';
+    const dryRun = input.dryRun === true;
+    if (!text.trim()) {
+      throw new LifeosError('validation_failed', 'Markdown 内容为空', { errors: ['text 不能为空'] });
+    }
+    const parsed = parseTasksMarkdown(text);
+    const ctx = snapshot();
+    const lists = allLists().slice();
+    const groups = allGroups().slice();
+    const tags = allTags().slice();
+    const defaultList = lists.find((list) => list.kind === 'inbox' || list.is_default) || lists[0] || null;
+    const report = {
+      dryRun,
+      total: parsed.items.length,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [],
+      createdLists: [],
+      createdGroups: [],
+      createdTags: [],
+      unknown: parsed.unknown,
+      skippedLines: parsed.skipped.slice(),
+    };
+
+    const findByName = (collection, name) => {
+      const value = String(name || '').trim().toLowerCase();
+      if (!value) return null;
+      return collection.find((item) => String(item.name || '').trim().toLowerCase() === value) || null;
+    };
+
+    async function resolveList(name) {
+      if (!name) return defaultList;
+      const found = findByName(lists, name);
+      if (found) return found;
+      if (dryRun) {
+        if (!report.createdLists.includes(name)) report.createdLists.push(name);
+        return { id: null, name, pending: true };
+      }
+      const created = await createList({ name });
+      lists.push(created.list);
+      report.createdLists.push(name);
+      return created.list;
+    }
+
+    async function resolveGroup(name, list) {
+      if (!name) return null;
+      const listId = list ? list.id : null;
+      const scoped = groups.filter((group) => !listId || group.list_id === listId);
+      const found = findByName(scoped, name) || findByName(groups, name);
+      if (found) return found;
+      if (dryRun) {
+        if (!report.createdGroups.includes(name)) report.createdGroups.push(name);
+        return null;
+      }
+      if (!listId) {
+        report.errors.push({ line: null, reason: `分组「${name}」没有指定清单，已忽略` });
+        return null;
+      }
+      const created = await createGroup(listId, { name });
+      groups.push({ ...created.group, list_id: listId });
+      report.createdGroups.push(name);
+      return { ...created.group, list_id: listId };
+    }
+
+    async function resolveTags(names) {
+      const ids = [];
+      for (const name of names || []) {
+        const found = findByName(tags, name);
+        if (found) {
+          ids.push(found.id);
+          continue;
+        }
+        if (dryRun) {
+          if (!report.createdTags.includes(name)) report.createdTags.push(name);
+          continue;
+        }
+        const created = await createTag({ name });
+        const tag = created.tag || created;
+        tags.push(tag);
+        ids.push(tag.id);
+        report.createdTags.push(name);
+      }
+      return ids;
+    }
+
+    for (const item of parsed.items) {
+      const annotations = item.annotations || {};
+      try {
+        const list = await resolveList(annotations.list);
+        const listId = list ? list.id : null;
+        const group = await resolveGroup(annotations.group, list);
+        const groupId = group ? group.id : null;
+        const tagIds = await resolveTags(annotations.tags);
+        // 时刻与日粒度互斥（task-domain.normalizeTime）：有 @time 时写 *_at，否则写日。
+        const timed = Boolean(annotations.time);
+        const scheduledStartAt = timed && annotations.start
+          ? localDateTimeToIso(timeZone, annotations.start, annotations.time)
+          : null;
+        const dueAt = timed && !annotations.start && annotations.due
+          ? localDateTimeToIso(timeZone, annotations.due, annotations.time)
+          : null;
+        const patch = {
+          title: item.title,
+          ...(listId ? { listId } : {}),
+          ...(groupId ? { groupId } : {}),
+          ...(annotations.start && !scheduledStartAt ? { scheduledDate: annotations.start } : {}),
+          ...(scheduledStartAt ? { scheduledStartAt } : {}),
+          ...(annotations.due && !dueAt ? { dueDate: annotations.due } : {}),
+          ...(dueAt ? { dueAt } : {}),
+          ...(annotations.priority ? { priority: annotations.priority } : {}),
+          ...(annotations.repeat ? { repeatRule: annotations.repeat } : {}),
+          ...(tagIds.length ? { tagIds } : {}),
+        };
+        const existing = annotations.id ? getTaskAny(annotations.id) : null;
+        if (annotations.id && !existing) {
+          report.errors.push({ line: item.line, reason: `找不到任务 ${annotations.id}，已跳过` });
+          report.skipped += 1;
+          continue;
+        }
+        // 已软删的同 id 任务：不复活（用户删过），按新建处理。
+        if (existing && !existing.deleted_at) {
+          if (!dryRun) {
+            const result = await updateTask(existing.id, patch, existing.rev);
+            if (item.done && existing.status !== 'done' && typeof completeTask === 'function') {
+              await completeTask(existing.id, result.task?.rev ?? result.rev);
+            }
+            report.updated += 1;
+          } else {
+            report.updated += 1;
+          }
+          continue;
+        }
+        const duplicate = ctx.tasks.find(
+          (task) =>
+            (task.list_id ?? null) === (listId ?? null) &&
+            String(task.title) === item.title &&
+            (task.due_date ?? null) === (annotations.due ?? null) &&
+            !task.deleted_at,
+        );
+        if (duplicate) {
+          report.skipped += 1;
+          report.skippedLines.push({ line: item.line, reason: `已存在同名任务：${item.title}` });
+          continue;
+        }
+        if (dryRun) {
+          report.created += 1;
+          continue;
+        }
+        const created = await createTask(patch);
+        if (item.done) {
+          await completeTask(created.task.id, created.task.rev ?? created.revision);
+        }
+        report.created += 1;
+      } catch (error) {
+        report.errors.push({ line: item.line, reason: String((error && error.message) || error) });
+      }
+    }
+    return report;
+  }
+
   function getUiPrefs() {
     return readUiPrefs();
   }
@@ -2006,6 +2256,8 @@ export function createTaskOps(deps) {
     getUiPrefs,
     setUiPrefs,
     todayTasks,
+    exportTasksMarkdown,
+    importTasksMarkdown,
     // 供测试/调试
     _internals: {
       snapshot,

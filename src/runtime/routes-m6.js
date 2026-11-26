@@ -578,6 +578,24 @@ function validateNotesTagsBatchBody(body) {
   return errors.length > 0 ? failValue(errors) : okValue(value);
 }
 
+/* ── M19 #20：任务 Markdown 导入校验（导出无需 body） ── */
+
+export const TASK_MARKDOWN_MAX_CHARS = 500000;
+
+export function validateTasksMarkdownImport(body) {
+  const errors = [];
+  const input = body && typeof body === 'object' ? body : {};
+  const text = typeof input.text === 'string' ? input.text : '';
+  if (!text.trim()) errors.push('text 必填');
+  else if (text.length > TASK_MARKDOWN_MAX_CHARS) errors.push('text 不能超过 ' + TASK_MARKDOWN_MAX_CHARS + ' 字符');
+  const value = { text };
+  if (input.dryRun !== undefined) {
+    if (typeof input.dryRun !== 'boolean') errors.push('dryRun 必须是布尔值');
+    else value.dryRun = input.dryRun;
+  }
+  return errors.length > 0 ? failValue(errors) : okValue(value);
+}
+
 /* ───────────────────────── 路由表 ───────────────────────── */
 
 export function buildM6Routes(deps) {
@@ -749,6 +767,28 @@ export function buildM6Routes(deps) {
         const input = validated(validateNotesTagsBatchBody(body), 'body');
         const expectedRev = optionalRev(ctx.req, body, ctx.url);
         return service.batchNotesTags({ ...input, expectedRev });
+      },
+    },
+    /* ── M19 #20：任务 ⇄ Markdown ─────────────────────── */
+    {
+      method: 'GET',
+      pattern: '/markdown/tasks',
+      handler: async (ctx) => {
+        const includeDone = ctx.url.searchParams.get('includeDone');
+        const includeCancelled = ctx.url.searchParams.get('includeCancelled');
+        return requireService(service, 'exportTasksMarkdown', '任务导出')({
+          includeDone: includeDone === null ? true : includeDone !== '0' && includeDone !== 'false',
+          includeCancelled: includeCancelled === '1' || includeCancelled === 'true',
+        });
+      },
+    },
+    {
+      method: 'POST',
+      pattern: '/markdown/tasks/import',
+      handler: async (ctx) => {
+        const body = await parseJsonBody(ctx.req);
+        const input = validated(validateTasksMarkdownImport(body), 'body');
+        return requireService(service, 'importTasksMarkdown', '任务导入')(input);
       },
     },
   ];
