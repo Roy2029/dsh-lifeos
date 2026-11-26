@@ -4,9 +4,9 @@
 > `done` rows require evidence (commit, test, screenshot, or doc path).
 > `partial` rows require a note describing what remains.
 
-Source: 2026-11-24 product feedback (32 items), decisions recorded in
-`D:\个人\LifeOS开发\design\23-反馈分类与迭代计划.md`. The repository copy of the
-status lives here; do not maintain a second checklist elsewhere.
+Source: 2026-11-24 product feedback (32 items). Decisions are reflected in the
+Status/Milestone columns and in `docs/plans/M18-PLAN.md`; this table is the
+repository's only tracking copy.
 
 | ID | Item | Status | Milestone | Evidence |
 |---|---|---|---|---|
