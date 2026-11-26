@@ -12,6 +12,10 @@ import {
   validateGoalCreate,
   validateGoalPatch,
   validateHabitCreate,
+  validateHabitGroupCreate,
+  validateHabitGroupId,
+  validateHabitGroupPatch,
+  validateHabitGroupReorder,
   validateHabitListQuery,
   validateHabitMonthQuery,
   validateHabitPatch,
@@ -168,4 +172,58 @@ test('目标 / 愿望校验器（含 convert）', () => {
   assert.equal(convert.value.goal.title, '由愿望转化');
   assert.equal(validateWishConvert({}).ok, false);
   assert.equal(validateWishConvert({ goal: {} }).ok, false);
+});
+
+test('M18 习惯分组校验器：id / create / patch / reorder', () => {
+  const groupId = 'hgrp_01M78CRMDYHSJ7VSPH81DRT2WR';
+  assert.equal(validateHabitGroupId(groupId).ok, true);
+  assert.equal(validateHabitGroupId('hab_01M78CRMDYHSJ7VSPH81DRT2WR').ok, false);
+  assert.equal(validateHabitGroupId('hgrp_bad').ok, false);
+
+  const created = validateHabitGroupCreate({ name: '  清晨  ' });
+  assert.equal(created.ok, true);
+  assert.equal(created.value.name, '清晨');
+  assert.equal(created.value.sort_order, undefined);
+  assert.equal(validateHabitGroupCreate({}).ok, false);
+  assert.equal(validateHabitGroupCreate({ name: 'x'.repeat(41) }).ok, false);
+
+  const patched = validateHabitGroupPatch({ name: '早起', collapsed: true, sort_order: 3 });
+  assert.equal(patched.ok, true);
+  assert.deepEqual(patched.value, { name: '早起', collapsed: true, sort_order: 3 });
+  assert.equal(validateHabitGroupPatch({}).ok, false);
+  assert.equal(validateHabitGroupPatch({ name: null }).ok, false);
+  assert.equal(validateHabitGroupPatch({ collapsed: 'yes' }).ok, false);
+
+  const reordered = validateHabitGroupReorder({ ids: [groupId] });
+  assert.equal(reordered.ok, true);
+  assert.deepEqual(reordered.value.ids, [groupId]);
+  assert.equal(validateHabitGroupReorder({ ids: [] }).ok, false);
+  assert.equal(validateHabitGroupReorder({ ids: [groupId, groupId] }).ok, false);
+  assert.equal(validateHabitGroupReorder({ ids: ['hab_01M78CRMDYHSJ7VSPH81DRT2WR'] }).ok, false);
+  assert.equal(validateHabitGroupReorder({ ids: 'nope' }).ok, false);
+});
+
+test('M18 习惯 create/patch：icon 与 group_id（null 清空）', () => {
+  const groupId = 'hgrp_01M78CRMDYHSJ7VSPH81DRT2WR';
+  const base = { name: '晨跑', frequency_rule: { kind: 'daily', interval: 1 }, start_date: DAY };
+
+  const withIcon = validateHabitCreate({ ...base, icon: ' 🏃 ', group_id: groupId });
+  assert.equal(withIcon.ok, true);
+  assert.equal(withIcon.value.icon, '🏃');
+  assert.equal(withIcon.value.group_id, groupId);
+
+  assert.equal(validateHabitCreate({ ...base, icon: '123456789' }).ok, false);
+  assert.equal(validateHabitCreate({ ...base, group_id: 'hab_01M78CRMDYHSJ7VSPH81DRT2WR' }).ok, false);
+
+  const cleared = validateHabitPatch({ icon: null, group_id: null });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.value.icon, null);
+  assert.equal(cleared.value.group_id, null);
+
+  const blank = validateHabitPatch({ icon: '   ' });
+  assert.equal(blank.ok, true);
+  assert.equal(blank.value.icon, null);
+
+  assert.equal(validateHabitPatch({ icon: '123456789' }).ok, false);
+  assert.equal(validateHabitPatch({ group_id: 'nope' }).ok, false);
 });

@@ -44,13 +44,20 @@ const UNIT_LAYOUT = Object.freeze({
  * 注：M8 按 task-47 契约把当前版本也列入 compatibleVersions（JSON 判断下冗余无害）；
  * 历史注释要求只列旧版本，此处保留任务契约原文以与 Lead/task 描述一致。
  */
-export const UNIT_SCHEMA_VERSION = Object.freeze({ [UNIT.CORE]: 3, [UNIT.RAW]: 1, [UNIT.LOG]: 1 })
+/**
+ * M18 schema v4：CORE 从 3 → 4（new habit_group 表 + habit.icon/habit.group_id 可空字段）。
+ * raw/log unit 结构未变，保持 1。
+ * JSON 后端用 `version === descriptor.version || compatibleVersions.includes(version)` 判断兼容，
+ * 所以现有 v1/v2/v3 数据文件可无痛打开，首次写入时原子盖上 version=4。
+ * 注：沿用 M8 约定把当前版本也列入 compatibleVersions（JSON 判断下冗余无害）。
+ */
+export const UNIT_SCHEMA_VERSION = Object.freeze({ [UNIT.CORE]: 4, [UNIT.RAW]: 1, [UNIT.LOG]: 1 })
 
 const UNIT_VERSION = UNIT_SCHEMA_VERSION
 
-/** 每个 unit 可兼容读取的版本号（M8：CORE 按 task-47 契约列 [1,2,3]；其余 unit 仍不含当前版本）。 */
+/** 每个 unit 可兼容读取的版本号（M18：CORE 列 [1,2,3,4]；其余 unit 仍不含当前版本）。 */
 const UNIT_COMPATIBLE = Object.freeze({
-  [UNIT.CORE]: Object.freeze([1, 2, 3]),
+  [UNIT.CORE]: Object.freeze([1, 2, 3, 4]),
   [UNIT.RAW]: Object.freeze([1]),
   [UNIT.LOG]: Object.freeze([1]),
 })

@@ -549,3 +549,129 @@ test('500 条 checkin 的 getStats/getMonth 在 100ms 内', async (t) => {
 
   assertAllWritesValid(store)
 })
+
+// ── M18 习惯分组（schema v4）─────────────────────────────────────
+
+test('M18 分组：创建/重命名/折叠/排序，序号从 0 递增且事件带 habit_group', async (t) => {
+  const { store, ops, events } = await setup(t)
+
+  const morning = await ops.createHabitGroup({ name: '  清晨  ' })
+  assert.match(morning.group.id, /^hgrp_/)
+  assert.equal(morning.group.name, '清晨')
+  assert.equal(morning.group.sort_order, 0)
+  assert.equal(morning.group.collapsed, false)
+  assert.equal(morning.revision, 1)
+
+  const evening = await ops.createHabitGroup({ name: '睡前' })
+  assert.equal(evening.group.sort_order, 1)
+
+  const listed = ops.listHabitGroups()
+  assert.deepEqual(listed.items.map((group) => group.name), ['清晨', '睡前'])
+
+  const renamed = await ops.updateHabitGroup(morning.group.id, { name: '早起' }, { expectedRev: 1 })
+  assert.equal(renamed.group.name, '早起')
+  assert.equal(renamed.revision, 2)
+  assert.deepEqual(renamed.diff.map((entry) => entry.field), ['name'])
+
+  // 无变化的 patch 不写库、不涨 rev
+  const noop = await ops.updateHabitGroup(morning.group.id, { name: '早起' }, { expectedRev: 2 })
+  assert.equal(noop.revision, 2)
+  assert.deepEqual(noop.diff, [])
+
+  const collapsed = await ops.updateHabitGroup(evening.group.id, { collapsed: true }, { expectedRev: 1 })
+  assert.equal(collapsed.group.collapsed, true)
+
+  // 陈旧 rev → conflict
+  await expectCode(() => ops.updateHabitGroup(morning.group.id, { name: '晚起' }, { expectedRev: 1 }), 'conflict')
+
+  // 空名/超长名 → validation_failed
+  await expectCode(() => ops.createHabitGroup({ name: '   ' }), 'validation_failed')
+  await expectCode(() => ops.createHabitGroup({ name: 'x'.repeat(41) }), 'validation_failed')
+
+  // 排序：逆序后 sort_order 跟随目标顺序
+  const reordered = await ops.reorderHabitGroups({ ids: [evening.group.id, morning.group.id] })
+  assert.deepEqual(reordered.items.map((group) => group.name), ['睡前', '早起'])
+  assert.deepEqual(reordered.items.map((group) => group.sort_order), [0, 1])
+
+  // 重复 id / 缺 id 被拒绝
+  await expectCode(() => ops.reorderHabitGroups({ ids: [morning.group.id, morning.group.id] }), 'validation_failed')
+  await expectCode(() => ops.reorderHabitGroups({ ids: ['hgrp_missing'] }), 'not_found')
+
+  // 事件
+  const kinds = events.filter((event) => event.kind === 'habit_group').map((event) => event.extra.action)
+  assert.ok(kinds.includes('create'))
+  assert.ok(kinds.includes('update'))
+  assert.ok(kinds.includes('reorder'))
+
+  // 落库记录合法（含 habit_group 表）
+  for (const record of recordRows(store, 'habit_group')) {
+    assert.equal(validateRecord('habit_group', record).ok, true, record.name)
+  }
+  assert.ok(logRows(store, 'operation_log').some((row) => row.action === 'habit_group.reorder'))
+})
+
+test('M18 分组：习惯归属、图标写入、删组回「未分组」且打卡不受影响', async (t) => {
+  const { store, ops, events } = await setup(t)
+  const group = await ops.createHabitGroup({ name: '健身' })
+
+  const created = await ops.createHabit({
+    name: '俯卧撑',
+    frequencyRule: { kind: 'daily', interval: 1 },
+    startDate: TODAY,
+    groupId: group.group.id,
+    icon: '💪',
+  })
+  assert.equal(created.habit.group_id, group.group.id)
+  assert.equal(created.habit.icon, '💪')
+
+  // 未知分组被拒绝
+  await expectCode(
+    () =>
+      ops.createHabit({
+        name: '引体向上',
+        frequencyRule: { kind: 'daily', interval: 1 },
+        startDate: TODAY,
+        groupId: 'hgrp_missing',
+      }),
+    'validation_failed',
+  )
+  // 图标超长被拒绝
+  await expectCode(
+    () =>
+      ops.createHabit({
+        name: '深蹲',
+        frequencyRule: { kind: 'daily', interval: 1 },
+        startDate: TODAY,
+        icon: '💪💪💪💪💪',
+      }),
+    'validation_failed',
+  )
+
+  // 打卡
+  await ops.checkin({ habitId: created.habit.id, localDate: TODAY, status: 'done' })
+  const checkinsBefore = recordRows(store, 'habit_checkin').length
+
+  // 归组/改图标（update 走 patch）
+  const moved = await ops.updateHabit(created.habit.id, { groupId: null, icon: null }, { expectedRev: 1 })
+  assert.equal(moved.habit.group_id, null)
+  assert.equal(moved.habit.icon, null)
+  const movedBack = await ops.updateHabit(created.habit.id, { groupId: group.group.id, icon: '🏋️' }, { expectedRev: 2 })
+  assert.equal(movedBack.habit.group_id, group.group.id)
+
+  // 删组：习惯回未分组、打卡记录不变、事件同时通知 habit_group 与 habit
+  const deleted = await ops.deleteHabitGroup(group.group.id, { expectedRev: 1 })
+  assert.equal(deleted.deleted, true)
+  assert.deepEqual(deleted.movedToUngrouped, [created.habit.id])
+  assert.equal(recordRows(store, 'habit_checkin').length, checkinsBefore)
+
+  const after = await ops.getHabit(created.habit.id)
+  assert.equal(after.habit.group_id, null)
+
+  // 软删后列表不再出现，且不能重复删除
+  assert.equal(ops.listHabitGroups().items.length, 0)
+  await expectCode(() => ops.deleteHabitGroup(group.group.id, { expectedRev: 2 }), 'not_found')
+
+  const habitEvents = events.filter((event) => event.kind === 'habit')
+  assert.ok(habitEvents.some((event) => event.ids.includes(created.habit.id) && event.extra.action === 'update'))
+  assertAllWritesValid(store)
+})

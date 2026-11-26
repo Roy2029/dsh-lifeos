@@ -19,18 +19,18 @@ test('契约：3 unit descriptor（name/layout/表集一次定全）', () => {
   assert.equal(UNIT_DESCRIPTORS.lifeos.layout, 'single')
   assert.equal(UNIT_DESCRIPTORS.lifeos_raw.layout, 'per-record')
   assert.equal(UNIT_DESCRIPTORS.lifeos_log.layout, 'per-record')
-  assert.equal(UNIT_DESCRIPTORS.lifeos.tables.length, 26)
+  assert.equal(UNIT_DESCRIPTORS.lifeos.tables.length, 27)
   assert.deepEqual(UNIT_DESCRIPTORS.lifeos_raw.tables, ['raw_record'])
   assert.deepEqual(UNIT_DESCRIPTORS.lifeos_log.tables, ['state_change', 'operation_log', 'journal'])
   for (const [name, descriptor] of Object.entries(UNIT_DESCRIPTORS)) {
     assert.equal(descriptor.name, name)
-    // M8：core unit 迁移到 schema v3（task.repeat_rule），raw/log 仍 v1。
-    assert.equal(descriptor.version, name === 'lifeos' ? 3 : 1)
-    assert.deepEqual(descriptor.compatibleVersions, name === 'lifeos' ? [1, 2, 3] : [1])
+    // M18：core unit 迁移到 schema v4（habit_group + habit.icon/group_id），raw/log 仍 v1。
+    assert.equal(descriptor.version, name === 'lifeos' ? 4 : 1)
+    assert.deepEqual(descriptor.compatibleVersions, name === 'lifeos' ? [1, 2, 3, 4] : [1])
     assert.equal(descriptor.hasGlobal, true)
   }
-  assert.equal(BUSINESS_TABLES.length, 29)
-  assert.equal(UNIT_TABLES[UNIT.CORE].length + UNIT_TABLES[UNIT.RAW].length + UNIT_TABLES[UNIT.LOG].length, 30)
+  assert.equal(BUSINESS_TABLES.length, 30)
+  assert.equal(UNIT_TABLES[UNIT.CORE].length + UNIT_TABLES[UNIT.RAW].length + UNIT_TABLES[UNIT.LOG].length, 31)
 })
 
 test('open：三 unit 打开、global 初始化、app_setting 默认值', async () => {

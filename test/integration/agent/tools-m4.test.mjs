@@ -732,3 +732,117 @@ test('生活服务别名：getStats/getMonth 也可用（不强制要求 getHabi
   assert.equal(month.ok, true)
   assert.equal(lastCall(service, 'getMonth').args[0].month, '2026-11')
 })
+
+// ── M18 习惯分组（schema v4）────────────────────────────────────
+
+function habitGroupView(overrides = {}) {
+  return { id: 'hgrp_1', name: '清晨', sort_order: 0, collapsed: false, rev: 1, ...overrides }
+}
+
+test('lifeos_habit 分组：list/create/update/delete/reorder 透传与文案', async () => {
+  const calls = []
+  const service = makeService({
+    async listHabitGroups() {
+      calls.push(['listHabitGroups'])
+      return { items: [habitGroupView(), habitGroupView({ id: 'hgrp_2', name: '睡前', sort_order: 1, rev: 2 })] }
+    },
+    async createHabitGroup(input) {
+      calls.push(['createHabitGroup', input])
+      return { group: habitGroupView({ id: 'hgrp_new', name: input.name }), revision: 1 }
+    },
+    async updateHabitGroup(id, patch, options) {
+      calls.push(['updateHabitGroup', id, patch, options])
+      return { group: habitGroupView({ id, ...patch, rev: 2 }), revision: 2, diff: [] }
+    },
+    async deleteHabitGroup(id, options) {
+      calls.push(['deleteHabitGroup', id, options])
+      return { deleted: true, id, movedToUngrouped: ['hab_1', 'hab_2'], revision: 3 }
+    },
+    async reorderHabitGroups(input) {
+      calls.push(['reorderHabitGroups', input])
+      const names = { hgrp_1: '清晨', hgrp_2: '睡前' }
+      return { items: input.ids.map((id, index) => habitGroupView({ id, name: names[id] ?? id, sort_order: index })) }
+    },
+  })
+  const tool = habitTool(service)
+  const run = (args) => tool.execute({ action: 'list_groups', ...args }, EXEC)
+
+  const listed = await run({})
+  assert.deepEqual(calls[0], ['listHabitGroups'])
+  assert.equal(listed.items.length, 2)
+  const listedText = assertTextBlocks(tool.output.render({}, listed))
+  assert.match(listedText, /清晨/)
+  assert.match(listedText, /睡前/)
+
+  const created = await run({ action: 'create_group', name: '晨间' })
+  assert.deepEqual(calls[1], ['createHabitGroup', { name: '晨间' }])
+  assert.match(assertTextBlocks(tool.output.render({}, created)), /已创建习惯分组「晨间」/)
+
+  // 分组名必填、超长被拒绝且不调服务
+  const missing = await run({ action: 'create_group' })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'validation_failed')
+  const tooLong = await run({ action: 'create_group', name: 'x'.repeat(41) })
+  assert.equal(tooLong.ok, false)
+
+  // update 未给 expectedRev 时先读列表取 rev
+  const updated = await run({ action: 'update_group', habitGroupId: 'hgrp_2', name: '深夜' })
+  const updateCall = calls.find(([name]) => name === 'updateHabitGroup')
+  assert.deepEqual(updateCall[2], { name: '深夜' })
+  assert.equal(updateCall[3].expectedRev, 2)
+  assert.equal(updated.group.name, '深夜')
+
+  const noField = await run({ action: 'update_group', habitGroupId: 'hgrp_2' })
+  assert.equal(noField.ok, false)
+
+  const removed = await run({ action: 'delete_group', habitGroupId: 'hgrp_2', expectedRev: 2 })
+  assert.equal(removed.movedCount, 2)
+  assert.match(assertTextBlocks(tool.output.render({}, removed)), /已移回「未分组」/)
+
+  const reordered = await run({ action: 'reorder_groups', groupIds: ['hgrp_2', 'hgrp_1'] })
+  assert.deepEqual(calls.at(-1), ['reorderHabitGroups', { ids: ['hgrp_2', 'hgrp_1'] }])
+  assert.match(assertTextBlocks(tool.output.render({}, reordered)), /睡前/)
+
+  // 非法 id / 重复 id
+  const badId = await run({ action: 'delete_group', habitGroupId: 'hab_1', expectedRev: 1 })
+  assert.equal(badId.ok, false)
+  const dup = await run({ action: 'reorder_groups', groupIds: ['hgrp_1', 'hgrp_1'] })
+  assert.equal(dup.ok, false)
+})
+
+test('lifeos_habit create/update：icon 与 groupId 透传（空字符串=清空）', async () => {
+  const service = makeService({
+    async updateHabit(habitId, patch, options) {
+      service.calls.push({ name: 'updateHabit', args: [habitId, patch, options] })
+      return { habit: habitView({ ...patch, rev: 4 }), revision: 4, diff: [] }
+    },
+  })
+  const tool = habitTool(service)
+  const calls = service.calls
+
+  const created = await tool.execute(
+    {
+      action: 'create',
+      name: '晨跑',
+      frequencyRule: { kind: 'daily', interval: 1 },
+      icon: '🏃',
+      groupId: 'hgrp_1',
+    },
+    EXEC,
+  )
+  assert.equal(created.ok, true)
+  const createCall = calls.find((call) => call.name === 'createHabit')
+  assert.equal(createCall.args[0].icon, '🏃')
+  assert.equal(createCall.args[0].groupId, 'hgrp_1')
+
+  const updated = await tool.execute({ action: 'update', habitId: 'hab_1', groupId: '', icon: '' }, EXEC)
+  assert.equal(updated.ok, true)
+  const updateCall = calls.find((call) => call.name === 'updateHabit')
+  assert.equal(updateCall.args[1].groupId, null)
+  assert.equal(updateCall.args[1].icon, null)
+
+  const badIcon = await tool.execute({ action: 'update', habitId: 'hab_1', icon: '123456789' }, EXEC)
+  assert.equal(badIcon.ok, false)
+  const badGroup = await tool.execute({ action: 'update', habitId: 'hab_1', groupId: 'hab_1' }, EXEC)
+  assert.equal(badGroup.ok, false)
+})

@@ -36,6 +36,7 @@ const EXPECTED_CORE = [
   'evidence_link',
   'list',
   'group',
+  'habit_group',
   'reminder',
   'attachment',
   'personal_memory',
@@ -46,17 +47,17 @@ const EXPECTED_CORE = [
   'app_setting',
 ]
 
-test('TABLE_SPECS：29 业务表 + journal，unit 归属符合 design/08', () => {
-  assert.equal(BUSINESS_TABLES.length, 29)
-  assert.equal(Object.keys(TABLE_SPECS).length, 30)
-  assert.equal(new Set(BUSINESS_TABLES).size, 29)
+test('TABLE_SPECS：30 业务表 + journal，unit 归属符合 design/08', () => {
+  assert.equal(BUSINESS_TABLES.length, 30)
+  assert.equal(Object.keys(TABLE_SPECS).length, 31)
+  assert.equal(new Set(BUSINESS_TABLES).size, 30)
   assert.ok(!BUSINESS_TABLES.includes(JOURNAL_TABLE))
   assert.equal(UNIT_TABLES[UNIT.RAW].length, 1)
   assert.deepEqual(UNIT_TABLES[UNIT.RAW], ['raw_record'])
-  assert.equal(UNIT_TABLES[UNIT.CORE].length, 26)
+  assert.equal(UNIT_TABLES[UNIT.CORE].length, 27)
   assert.deepEqual(UNIT_TABLES[UNIT.LOG], ['state_change', 'operation_log', 'journal'])
   assert.deepEqual([...UNIT_TABLES[UNIT.CORE]].sort(), [...EXPECTED_CORE].sort())
-  assert.deepEqual(tablesForUnit(UNIT.CORE).length, 26)
+  assert.deepEqual(tablesForUnit(UNIT.CORE).length, 27)
   assert.deepEqual(tablesForUnit('nope'), [])
 })
 

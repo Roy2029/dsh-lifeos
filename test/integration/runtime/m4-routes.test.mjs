@@ -584,3 +584,129 @@ test('服务未就绪 → 503 store_unavailable；OPTIONS 允许 DELETE', async 
   assert.equal(options.status, 204);
   assert.match(options.headers['access-control-allow-methods'], /DELETE/);
 });
+
+/* ───────────────────────── 习惯分组（M18）───────────────────────── */
+
+const GROUP_ID = `hgrp_${SUFFIX}`;
+
+function withGroups(overrides = {}) {
+  const seen = { list: 0, create: [], update: [], remove: [], reorder: [] };
+  const harness = makeHarness({
+    listHabitGroups: () => {
+      seen.list += 1;
+      return { items: [{ id: GROUP_ID, name: '清晨', sort_order: 0, collapsed: false, rev: 1 }] };
+    },
+    createHabitGroup: (input) => {
+      seen.create.push(input);
+      return { group: { id: GROUP_ID, name: input.name, sort_order: 1, collapsed: false, rev: 1 }, revision: 1 };
+    },
+    updateHabitGroup: (id, patch, opts) => {
+      seen.update.push([id, patch, opts]);
+      return {
+        group: { id, name: patch.name ?? '清晨', sort_order: 1, collapsed: patch.collapsed ?? false, rev: 2 },
+        revision: 2,
+        diff: [],
+      };
+    },
+    deleteHabitGroup: (id, opts) => {
+      seen.remove.push([id, opts]);
+      return { deleted: true, id, movedToUngrouped: [HABIT_ID], revision: 3 };
+    },
+    reorderHabitGroups: (input) => {
+      seen.reorder.push(input);
+      return {
+        items: input.ids.map((id, index) => ({ id, name: `分组${index}`, sort_order: index, collapsed: false, rev: 2 })),
+        revision: null,
+      };
+    },
+    ...overrides,
+  });
+  return { ...harness, seen };
+}
+
+test('习惯分组：GET / POST / reorder / PATCH / DELETE 信封、校验与 SSE', async () => {
+  const { routes, seen, published } = withGroups();
+
+  const list = await call(routes, { url: '/api/lifeos/habit-groups' });
+  assert.equal(list.status, 200);
+  assert.equal(list.json().value.items[0].id, GROUP_ID);
+  assert.equal(seen.list, 1);
+
+  const created = await callWrite(routes, { method: 'POST', url: '/api/lifeos/habit-groups', body: { name: '清晨' } });
+  assert.equal(created.status, 200);
+  assert.equal(created.json().value.group.id, GROUP_ID);
+  assert.equal(created.json().value.revision, 1);
+  assert.deepEqual(seen.create[0], { name: '清晨' });
+  assert.ok(changedKinds(published).includes('habit_group'));
+
+  const noName = await callWrite(routes, { method: 'POST', url: '/api/lifeos/habit-groups', body: {} });
+  assert.equal(noName.status, 422);
+  assert.equal(noName.json().error.code, 'validation_failed');
+
+  const reordered = await callWrite(routes, {
+    method: 'POST',
+    url: '/api/lifeos/habit-groups/reorder',
+    body: { ids: [GROUP_ID] },
+  });
+  assert.equal(reordered.status, 200);
+  assert.equal(reordered.json().value.items[0].sort_order, 0);
+  assert.deepEqual(seen.reorder[0], { ids: [GROUP_ID] });
+  const dup = await callWrite(routes, {
+    method: 'POST',
+    url: '/api/lifeos/habit-groups/reorder',
+    body: { ids: [GROUP_ID, GROUP_ID] },
+  });
+  assert.equal(dup.status, 422);
+
+  const patched = await callWrite(routes, {
+    method: 'PATCH',
+    url: `/api/lifeos/habit-groups/${GROUP_ID}`,
+    body: { patch: { name: '早起' }, expectedRev: 1 },
+  });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.json().value.group.name, '早起');
+  assert.equal(seen.update[0][2].expectedRev, 1);
+  const noRev = await callWrite(routes, {
+    method: 'PATCH',
+    url: `/api/lifeos/habit-groups/${GROUP_ID}`,
+    body: { patch: { name: '早起' } },
+  });
+  assert.equal(noRev.status, 422);
+  const badId = await callWrite(routes, {
+    method: 'PATCH',
+    url: '/api/lifeos/habit-groups/hab_00000000000000000000000000',
+    body: { name: 'x', expectedRev: 1 },
+  });
+  assert.equal(badId.status, 422);
+
+  const deleted = await callWrite(routes, {
+    method: 'DELETE',
+    url: `/api/lifeos/habit-groups/${GROUP_ID}`,
+    body: { expectedRev: 2 },
+  });
+  assert.equal(deleted.status, 200);
+  assert.equal(deleted.json().value.ok, true);
+  assert.deepEqual(deleted.json().value.movedToUngrouped, [HABIT_ID]);
+  assert.equal(seen.remove[0][0], GROUP_ID);
+  const deleteEvent = published.find((event) => event.type === 'changed' && event.data.action === 'delete');
+  assert.ok(deleteEvent);
+  assert.deepEqual(deleteEvent.data.movedToUngrouped, [HABIT_ID]);
+});
+
+test('习惯分组：PATCH 冲突透传 409（details.current）', async () => {
+  const { routes } = withGroups({
+    updateHabitGroup: () => {
+      throw new LifeosError('conflict', '习惯分组已被修改，请刷新后重试', {
+        current: { id: GROUP_ID, name: '清晨', rev: 2 },
+      });
+    },
+  });
+  const res = await callWrite(routes, {
+    method: 'PATCH',
+    url: `/api/lifeos/habit-groups/${GROUP_ID}`,
+    body: { patch: { name: '早起' }, expectedRev: 1 },
+  });
+  assert.equal(res.status, 409);
+  assert.equal(res.json().error.code, 'conflict');
+  assert.equal(res.json().error.details.current.rev, 2);
+});

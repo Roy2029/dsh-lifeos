@@ -194,7 +194,7 @@ async function makeDir(t) {
   return dir
 }
 
-test('迁移 spike：v1 文件 → 备份 bak-m8、schemaVersion 3、旧记录可读、repeat_rule 可写、重开正常', async (t) => {
+test('迁移 spike：v1 文件 → 备份 bak-m8、schemaVersion 4、旧记录可读、repeat_rule 可写、重开正常', async (t) => {
   const dir = await makeDir(t)
   const oldTask = fixtureTask()
   const file = await writeFixtureFile(dir, { unitVersion: 1, taskRecord: oldTask })
@@ -206,11 +206,11 @@ test('迁移 spike：v1 文件 → 备份 bak-m8、schemaVersion 3、旧记录�
     now: NOW,
   })
   assert.equal(store.status().degraded, false)
-  assert.equal(store.status().schemaVersion, 3)
+  assert.equal(store.status().schemaVersion, 4)
   const migration = store.status().migration
   assert.equal(migration.status, 'completed')
   assert.equal(migration.fromVersion, 1)
-  assert.equal(migration.toVersion, 3)
+  assert.equal(migration.toVersion, 4)
   assert.ok(migration.backupPath, '应生成迁移备份')
   assert.ok(migration.backupPath.startsWith(join(dir, 'lifeos.json.bak-m8-')), migration.backupPath)
 
@@ -243,10 +243,10 @@ test('迁移 spike：v1 文件 → 备份 bak-m8、schemaVersion 3、旧记录�
 
   await store.close()
 
-  // 首次写后文件 stamp 已经是 3。
-  assert.equal(readUnitVersion(await readFile(file, 'utf8')), 3)
+  // 首次写后文件 stamp 已经是 4。
+  assert.equal(readUnitVersion(await readFile(file, 'utf8')), 4)
 
-  // 重开（v3 描述符）→ 旧记录、repeat_rule、新表数据都在。
+  // 重开（v4 描述符）→ 旧记录、repeat_rule、新表数据都在。
   const reopened = await openLifeosStore(null, {
     backend: createFileBackend(dir),
     timeZone: TZ,
@@ -279,11 +279,11 @@ test('迁移 spike：v2 文件 → 备份 bak-m8、fromVersion 2、旧字段可�
     now: NOW,
   })
   assert.equal(store.status().degraded, false)
-  assert.equal(store.status().schemaVersion, 3)
+  assert.equal(store.status().schemaVersion, 4)
   const migration = store.status().migration
   assert.equal(migration.status, 'completed')
   assert.equal(migration.fromVersion, 2)
-  assert.equal(migration.toVersion, 3)
+  assert.equal(migration.toVersion, 4)
   assert.ok(migration.backupPath.startsWith(join(dir, 'lifeos.json.bak-m8-')), migration.backupPath)
 
   // 备份是 v2 原样文件。
@@ -298,7 +298,7 @@ test('迁移 spike：v2 文件 → 备份 bak-m8、fromVersion 2、旧字段可�
   assert.equal(loaded.pinned, false)
   assert.equal(loaded.repeat_rule, undefined)
 
-  // 写入 v3 新字段后持久化。
+  // 写入 v4 新字段后持久化。
   await store.put('lifeos', 'task', oldTask.id, {
     ...loaded,
     repeat_rule: { kind: 'monthly', day: 15 },
@@ -306,7 +306,7 @@ test('迁移 spike：v2 文件 → 备份 bak-m8、fromVersion 2、旧字段可�
     rev: 2,
   })
   await store.close()
-  assert.equal(readUnitVersion(await readFile(file, 'utf8')), 3)
+  assert.equal(readUnitVersion(await readFile(file, 'utf8')), 4)
 
   const reopened = await openLifeosStore(null, {
     backend: createFileBackend(dir),
@@ -366,8 +366,8 @@ test('回滚：v3 stamp 被 v2 reader 拒绝；用备份恢复后 v2 reader 仍�
   await store.put('lifeos', 'list', listId, { id: listId, name: '工作', kind: 'normal' })
   await store.close()
 
-  // 旧 reader（v2 描述符）拒绝 v3 stamp。
-  const oldDescriptor = { name: 'lifeos', version: 2, compatibleVersions: [1, 2], tables: ['task'] }
+  // 旧 reader（v3 描述符）拒绝 v4 stamp。
+  const oldDescriptor = { name: 'lifeos', version: 3, compatibleVersions: [1, 2, 3], tables: ['task'] }
   await assert.rejects(
     () => openFileUnit(dir, oldDescriptor),
     (error) => error?.code === 'version-mismatch',
@@ -383,7 +383,7 @@ test('回滚：v3 stamp 被 v2 reader 拒绝；用备份恢复后 v2 reader 仍�
   assert.equal(readUnitVersion(await readFile(file, 'utf8')), 2)
 })
 
-test('新库首次打开：无旧文件 → 不备份、直接以 v3 落盘', async (t) => {
+test('新库首次打开：无旧文件 → 不备份、直接以 v4 落盘', async (t) => {
   const dir = await makeDir(t)
   const store = await openLifeosStore(null, {
     backend: createFileBackend(dir),
@@ -395,9 +395,88 @@ test('新库首次打开：无旧文件 → 不备份、直接以 v3 落盘', as
   const migration = store.status().migration
   assert.equal(migration.status, 'none')
   assert.equal(migration.skipped, 'no-data-file')
-  assert.equal(store.status().schemaVersion, 3)
+  assert.equal(store.status().schemaVersion, 4)
   await store.close()
-  assert.equal(readUnitVersion(await readFile(join(dir, 'lifeos.json'), 'utf8')), 3)
+  assert.equal(readUnitVersion(await readFile(join(dir, 'lifeos.json'), 'utf8')), 4)
+})
+
+test('v3 → v4：旧 habit 无 icon/group_id 仍可读，habit_group 可写，二次打开 skipped', async (t) => {
+  const dir = await makeDir(t)
+  const habitId = newId('hab')
+  const oldHabit = {
+    id: habitId,
+    name: '晨间拉伸',
+    status: 'active',
+    frequency_rule: { kind: 'daily' },
+    checkin_mode: 'either',
+    sort_order: 0,
+    start_date: '2026-01-01',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    rev: 1,
+    schema_version: 3,
+  }
+  const file = join(dir, 'lifeos.json')
+  await writeFile(
+    file,
+    JSON.stringify({
+      unit: { name: 'lifeos', version: 3 },
+      global: { schema_version: 3, timezone: TZ, week_start: 'monday', created_at: '2026-01-01T00:00:00.000Z' },
+      tables: { habit: { [habitId]: oldHabit } },
+    }),
+  )
+
+  const store = await openLifeosStore(null, {
+    backend: createFileBackend(dir),
+    timeZone: TZ,
+    testMode: true,
+    now: NOW,
+  })
+  assert.equal(store.status().degraded, false)
+  assert.equal(store.status().schemaVersion, 4)
+  const migration = store.status().migration
+  assert.equal(migration.status, 'completed')
+  assert.equal(migration.fromVersion, 3)
+  assert.equal(migration.toVersion, 4)
+  // 备份是 v3 原样文件（迁移前数据无损）。
+  const backupText = await readFile(migration.backupPath, 'utf8')
+  assert.equal(readUnitVersion(backupText), 3)
+  assert.equal(JSON.parse(backupText).tables.habit[habitId].name, '晨间拉伸')
+
+  // 旧 habit 可读：没有 icon/group_id 不崩，语义为「按名称推导 + 未分组」。
+  const loaded = store.get('lifeos', 'habit', habitId)
+  assert.equal(loaded.name, '晨间拉伸')
+  assert.equal(loaded.icon, undefined)
+  assert.equal(loaded.group_id, undefined)
+
+  // v4 新表 habit_group 可写，habit 可写入 icon/group_id。
+  const groupId = newId('hgrp')
+  await store.put('lifeos', 'habit_group', groupId, { id: groupId, name: '清晨' })
+  assert.equal(store.get('lifeos', 'habit_group', groupId).name, '清晨')
+  await store.put('lifeos', 'habit', habitId, {
+    ...loaded,
+    icon: '🌅',
+    group_id: groupId,
+    updated_at: NOW,
+    rev: 2,
+  })
+  assert.equal(store.get('lifeos', 'habit', habitId).icon, '🌅')
+  assert.equal(store.get('lifeos', 'habit', habitId).group_id, groupId)
+  await store.close()
+  assert.equal(readUnitVersion(await readFile(file, 'utf8')), 4)
+
+  // 幂等：二次打开不再迁移，数据都在。
+  const reopened = await openLifeosStore(null, {
+    backend: createFileBackend(dir),
+    timeZone: TZ,
+    testMode: true,
+    now: NOW,
+  })
+  assert.equal(reopened.status().migration.status, 'none')
+  assert.equal(reopened.status().migration.skipped, 'up-to-date')
+  assert.equal(reopened.get('lifeos', 'habit', habitId).icon, '🌅')
+  assert.equal(reopened.get('lifeos', 'habit_group', groupId).name, '清晨')
+  await reopened.close()
 })
 
 test('备份失败必须中止迁移：数据文件保持 v2 原样、store 只读降级', async (t) => {

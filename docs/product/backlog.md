@@ -5,12 +5,12 @@
 > `partial` rows require a note describing what remains.
 
 Source: 2026-11-24 product feedback (32 items). Decisions are reflected in the
-Status/Milestone columns and in `docs/plans/M18-PLAN.md`; this table is the
+Status/Milestone columns and in `docs/plans/archive/M18-PLAN.md`; this table is the
 repository's only tracking copy.
 
 | ID | Item | Status | Milestone | Evidence |
 |---|---|---|---|---|
-| #1 | Inline titles: group rename, habit title, habit icon | partial | M18 | group rename via menu in 6e70593; habit icon + inline title pending M18 |
+| #1 | Inline titles: group rename, habit title, habit icon | done | M18 | M18: habit icon picker (recent 8 + 80 emoji matrix, habit.icon) and inline habit title rename; docs/images/m18-habits-icon-picker.png; static + harness checks |
 | #2 | Multi-select highlight must equal selection; batch move to group | done | M15 | 6e70593 |
 | #3 | Quick capture: Enter hint, over-limit feedback, rule tooltip | partial | M15 | hint + tooltip in 6e70593; no shake/3s bubble/auto-grow |
 | #4 | Remember per-tab page state (scope, selection, detail, scroll) | partial | M15 | 6e70593; calendar stores view/anchor but not selected task |
@@ -25,7 +25,7 @@ repository's only tracking copy.
 | #13 | Move search entry to the task list bar, keep `/` shortcut | done | M15 | 6e70593; searches current scope only |
 | #14 | Capsule list width max 50% of three-pane layout | partial | M15 | 6e70593; fixed 660px default, draggable 420–1000, not a 50% cap |
 | #15 | Quick capture draft persistence | partial | M15 | 6e70593; text/target saved, expanded state not saved |
-| #16 | Habit groups (habit_group + group_id, CRUD, drag, collapse, schema v4) | todo | M18 | plan pending |
+| #16 | Habit groups (habit_group + group_id, CRUD, drag, collapse, schema v4) | done | M18 | M18: schema v4 + habit-groups API/UI; docs/plans/archive/M18-PLAN.md; docs/images/m18-habits-groups.png, m18-habits-collapsed.png |
 | #17 | Distinguish multi-select checkbox from complete checkbox | done | M15 | 6e70593 |
 | #18 | Calendar task properties use full task detail; task bar grouping/sorting | partial | M16 | 563fc2f compact Cal2TaskModal; bar supports list/group + date/priority/created/custom, missing title/tag/modified sorts |
 | #19 | Quick time options (today / tomorrow / next week) | done | M16 | f0bf2f8 |
