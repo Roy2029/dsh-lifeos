@@ -42,7 +42,7 @@ window.__ModuleLoader__.load({
     const API_PREFIX = '/api/lifeos'
     const PANEL_ID = 'lifeos'
     const OVERLAY_ID = 'lifeos-quick-capture'
-    const PLUGIN_VERSION = '0.0.1'
+    const PLUGIN_VERSION = '0.2.0'
     const TAB_STORAGE_KEY = 'lifeos.panel.tab'
     const DRAFT_STORAGE_KEY = 'lifeos.quick-capture.draft'
     const QUICK_CAPTURE_LABEL = '快速记录（Ctrl+Shift+Space）'
@@ -27955,7 +27955,7 @@ const V2_SETTINGS_ENUMS = {
   taskSort: ['custom', 'created', 'date', 'priority'],
   calendarView: ['month', 'week', 'day'],
   notesAutosaveMs: [500, 800, 1500],
-  notesFontSize: [13, 13.5, 15],
+  notesFontSize: [13, 13.5, 15, 17],
 }
 
 const V2_SETTINGS_LABELS = {
@@ -27964,7 +27964,7 @@ const V2_SETTINGS_LABELS = {
   taskSort: { custom: '自定义', created: '创建时间', date: '日期', priority: '优先级' },
   calendarView: { month: '月', week: '周', day: '日' },
   notesAutosaveMs: { 500: '0.5 秒', 800: '0.8 秒', 1500: '1.5 秒' },
-  notesFontSize: { 13: '小', 13.5: '标准', 15: '大' },
+  notesFontSize: { 13: '小', 13.5: '标准', 15: '大', 17: '特大' },
 }
 
 function v2SettingsPick(source, key, fallback) {
