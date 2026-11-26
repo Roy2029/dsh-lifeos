@@ -9,7 +9,7 @@
 - Phase: planning
 - Tests: 633
 - Last verified: 2026-11-26
-- Last verified commit: 563fc2f
+- Last verified commit: 2730f74
 - OpenSpec: optional
 
 ## Now
