@@ -49,7 +49,7 @@ started: 2026-11-26
 - [ ] 客户端图标选择器：最近使用 + emoji 矩阵，写入 `habit.icon`。
 - [ ] 静态契约测试覆盖新 schema 字段与客户端关键路径；更新 `client-shared/contract.js`（如需要）。
 - [ ] 构建 `client.js`、跑全仓测试与 harness 截图验收。
-- [ ] 更新 backlog/STATUS/README，归档本计划。
+- [ ] 更新 backlog/STATUS，归档本计划；README 仅在用户用法变化时更新。
 
 ## 风险
 
