@@ -9,6 +9,7 @@
  *  - 工具/prompt 在 preset 平面（D 线 agent.js），Host 行只注册 preset 定义。
  */
 
+import { readFileSync } from 'node:fs';
 import { createLifeosService } from './src/application/lifeos-service.js';
 import { createDiagnostics } from './src/runtime/diagnostics.js';
 import { createEventBus, publishNoteChange } from './src/runtime/sse.js';
@@ -23,6 +24,14 @@ import { startNoteWatch } from './src/runtime/note-watch.js';
 
 export const name = 'lifeos';
 
+const PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 /** 硬依赖：缺任一不激活（webServer 用于 HTTP/SSE；agentPresets 用于注册生活教练 preset）。 */
 export const inject = ['storage', 'webServer', 'tools', 'agentPresets'];
 
@@ -36,7 +45,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   heartbeatMs: 15000,
   sseRingSize: 50,
   units: { core: 'lifeos', raw: 'lifeos_raw', log: 'lifeos_log' },
-  version: '0.0.1',
+  version: PACKAGE_VERSION,
 });
 
 export function normalizeConfig(raw) {

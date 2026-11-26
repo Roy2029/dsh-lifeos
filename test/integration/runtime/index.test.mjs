@@ -110,6 +110,8 @@ function readDiag(path) {
 test('index: 常量与配置归一化', () => {
   assert.equal(name, 'lifeos');
   assert.deepEqual(inject, ['storage', 'webServer', 'tools', 'agentPresets']);
+  const pkg = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'));
+  assert.equal(DEFAULT_CONFIG.version, pkg.version, 'DEFAULT_CONFIG.version 必须来自 package.json');
   const { config, warnings } = normalizeConfig({
     enabled: true,
     timeZone: 'Asia/Shanghai',

@@ -252,3 +252,10 @@ test('client-v2：日历删除 / 跨日拖选 / 清单内置底已完成分组',
   assert.match(tasks, /移入分组内置底「已完成」分组/)
   assert.doesNotMatch(tasks, /id: 'done-list'/)
 })
+test('client.js 的 PLUGIN_VERSION 与 package.json 一致', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  const client = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  const match = /const PLUGIN_VERSION = '([^']+)'/.exec(client)
+  assert.ok(match, 'client.js 必须声明 PLUGIN_VERSION')
+  assert.equal(match[1], pkg.version)
+})

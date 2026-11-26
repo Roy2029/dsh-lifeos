@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "project": "LifeOS",
+  "statusFile": "STATUS.md",
+  "backlogFile": "docs/product/backlog.md",
+  "workflowFile": "docs/development/workflow.md",
+  "plansDir": "docs/plans",
+  "archiveDir": "docs/plans/archive",
+  "readmeFile": "README.md",
+  "agentsFile": "AGENTS.md",
+  "versionSources": [
+    {
+      "file": "package.json",
+      "kind": "json",
+      "pointer": "version"
+    }
+  ],
+  "testCommand": "npm test",
+  "testCountPattern": "(?:#|ℹ)\\s*pass\\s+(\\d+)",
+  "forbiddenReadmeClaims": [],
+  "requiredFiles": [
+    "README.md",
+    "STATUS.md",
+    "docs/product/backlog.md",
+    "docs/development/workflow.md",
+    "AGENTS.md"
+  ]
+}
