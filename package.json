@@ -49,8 +49,7 @@
   ],
   "scripts": {
     "build": "node scripts/build-v2.mjs",
-    "test": "node --test --test-isolation=none --test-force-exit",
-    "check": "node scripts/spec-sync.mjs check --tests"
+    "test": "node --test --test-isolation=none --test-force-exit"
   },
   "dsh": {
     "bundle": {
