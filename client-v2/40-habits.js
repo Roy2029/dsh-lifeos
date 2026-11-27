@@ -1639,16 +1639,17 @@ function HabitEditorModal(props) {
             { style: { flex: '1 1 0', minWidth: 0 } },
             field(
               '开始日期',
-              h('input', {
-                type: 'date',
-                value: form.startDate || '',
-                onChange: function onChange(event) {
-                  props.onChange({ startDate: event.target.value })
-                },
-                onFocus: focusField,
-                onBlur: blurField,
-                style: habitInputStyle(),
-              }),
+              /* M20 #8：与任务页签共用 V2DatePicker，不再用原生日期输入 */
+              h('div', { style: { display: 'flex' } },
+                h(V2DatePicker, {
+                  value: form.startDate || '',
+                  width: '100%',
+                  title: '更改开始日期',
+                  onChange: function onPick(dayKey) {
+                    props.onChange({ startDate: dayKey })
+                  },
+                }),
+              ),
             ),
           ),
           h(

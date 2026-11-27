@@ -288,6 +288,11 @@ export function validateCreateTask(body) {
   }
   const repeatRule = validateRepeatRule(body.repeatRule);
   if (!repeatRule.ok) errors.push(...repeatRule.errors);
+  /* M20：清单/分组归属（服务层 resolvePlacement 已支持，之前被校验器拦掉，导致快速记录带分类会 422） */
+  for (const [field, prefix] of [['listId', 'lst_'], ['groupId', 'grp_']]) {
+    if (body[field] === undefined || body[field] === null || body[field] === '') continue;
+    if (!isEntityId(body[field]) || !body[field].startsWith(prefix)) errors.push(`${field} 必须是 ${prefix} 开头的 ID`);
+  }
   const time = normalizeTimeFields(body, errors);
   if (time.scheduledDate && time.scheduledStartAt) errors.push('scheduledDate 与 scheduledStartAt 互斥（二选一）');
   if (time.dueDate && time.dueAt) errors.push('dueDate 与 dueAt 互斥（二选一）');
@@ -298,7 +303,17 @@ export function validateCreateTask(body) {
   if (errors.length > 0) return fail(errors);
   return {
     ok: true,
-    value: { title, notes, priority, projectId, tagIds, repeatRule: repeatRule.value, ...time },
+    value: {
+      title,
+      notes,
+      priority,
+      projectId,
+      tagIds,
+      listId: body.listId || null,
+      groupId: body.groupId || null,
+      repeatRule: repeatRule.value,
+      ...time,
+    },
   };
 }
 
@@ -308,6 +323,8 @@ const UPDATE_KEYS = new Set([
   'priority',
   'projectId',
   'tagIds',
+  'listId',
+  'groupId',
   'scheduledDate',
   'scheduledStartAt',
   'scheduledEndAt',
@@ -357,6 +374,16 @@ export function validateUpdateTask(body) {
       }
       patch.tagIds = [...new Set(body.tagIds)];
     }
+  }
+  /* M20：允许改清单/分组（null 表示移回收件箱/未分组） */
+  for (const [field, prefix] of [['listId', 'lst_'], ['groupId', 'grp_']]) {
+    if (body[field] === undefined) continue;
+    if (body[field] === null || body[field] === '') {
+      patch[field] = null;
+      continue;
+    }
+    if (!isEntityId(body[field]) || !body[field].startsWith(prefix)) errors.push(`${field} 必须是 ${prefix} 开头的 ID`);
+    else patch[field] = body[field];
   }
   if (body.repeatRule !== undefined) {
     const repeatRule = validateRepeatRule(body.repeatRule);

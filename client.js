@@ -10071,7 +10071,7 @@ function v2PageBgStyle(extra) {
   )
 }
 
-/* ---- 10-shell.js (1611 lines) ---- */
+/* ---- 10-shell.js (1759 lines) ---- */
 /* ═══════════════════════ M6 · V2 外壳 ═══════════════════════ */
 
 const V2_TAB_STORAGE_KEY = 'lifeos.v2.tab'
@@ -10926,6 +10926,33 @@ const V2_CAPTURE_WHEN_ITEMS = [
   { id: 'next_week', label: '下周' },
 ]
 
+/* M20 #3：快速记录的文本边界。上限与 Host 的 MAX_CAPTURE_CHARS（contract.js）一致，
+   客户端提前拦下，避免 Host 返回 409 之后才告诉用户。 */
+const V2_CAPTURE_MAX_CHARS = 20000
+const V2_CAPTURE_WARN_RATIO = 0.9
+const V2_CAPTURE_NOTICE_MS = 3000
+const V2_CAPTURE_TEXT_MIN_HEIGHT = 96
+const V2_CAPTURE_TEXT_MAX_HEIGHT = 240
+
+/** 文本是否超过上限（超限时禁止提交）。 */
+function v2CaptureTextTooLong(text) {
+  return String(text || '').length > V2_CAPTURE_MAX_CHARS
+}
+
+/** 计数提示：临近或超过上限时只显示用量，拆分建议放在气泡里，避免重复。 */
+function v2CaptureLengthHint(text) {
+  const length = String(text || '').length
+  if (length >= Math.floor(V2_CAPTURE_MAX_CHARS * V2_CAPTURE_WARN_RATIO)) {
+    return '已用 ' + length + ' / ' + V2_CAPTURE_MAX_CHARS + ' 字'
+  }
+  return ''
+}
+
+/** 超限时的行动建议（气泡用）。 */
+function v2CaptureLimitMessage() {
+  return '超过 ' + V2_CAPTURE_MAX_CHARS + ' 字上限，请拆成多条，或先存为随记'
+}
+
 /** 归一化分类选择：只保留已知字段，避免脏 localStorage 影响提交。 */
 function v2CaptureNormalizeClassify(value) {
   const source = value && typeof value === 'object' ? value : {}
@@ -11119,6 +11146,12 @@ function V2HostCaptureDialog(props) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [hintPulse, setHintPulse] = useState(false)
+  const [shakeOffset, setShakeOffset] = useState(0)
+  const [notice, setNotice] = useState(null)
+  /* M20 #3：把实测高度存进 state，重渲染后仍保持自增高结果 */
+  const [textHeight, setTextHeight] = useState(0)
+  const noticeTimerRef = useRef(null)
+  const shakeFrameRef = useRef(0)
   const [draftRestored] = useState(!!(initialDraft && initialDraft.text.trim()))
   const [classify, setClassify] = useState(function initClassify() {
     const remembered = v2ReadCaptureClassify()
@@ -11142,7 +11175,10 @@ function V2HostCaptureDialog(props) {
   useEffect(function focusOnOpen() {
     const timer = setTimeout(function focusLater() {
       try {
-        if (textareaRef.current) textareaRef.current.focus()
+        if (textareaRef.current) {
+          textareaRef.current.focus()
+          autoGrowTextarea(textareaRef.current)
+        }
       } catch (inner) {
         /* ignore */
       }
@@ -11164,6 +11200,72 @@ function V2HostCaptureDialog(props) {
       /* ignore */
     }
   }
+
+  /* M20 #3：3 秒气泡（role=status）——长文按 Enter、超限都走这里，不新增常驻文案。 */
+  function showNotice(kind, message) {
+    setNotice({ kind: kind, message: message })
+    try {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    } catch (inner) {
+      /* ignore */
+    }
+    noticeTimerRef.current = setTimeout(function clearNotice() {
+      noticeTimerRef.current = null
+      setNotice(null)
+    }, V2_CAPTURE_NOTICE_MS)
+  }
+
+  /* M20 #3：抖动用 rAF 衰减位移，不引入 CSS keyframes（客户端没有全局样式表）。 */
+  function shakeOnce() {
+    const startedAt = Date.now()
+    const duration = 320
+    try {
+      if (shakeFrameRef.current) cancelAnimationFrame(shakeFrameRef.current)
+    } catch (inner) {
+      /* ignore */
+    }
+    function step() {
+      const elapsed = Date.now() - startedAt
+      if (elapsed >= duration) {
+        shakeFrameRef.current = 0
+        setShakeOffset(0)
+        return
+      }
+      const progress = elapsed / duration
+      const amplitude = 6 * (1 - progress)
+      setShakeOffset(Math.round(Math.sin(progress * Math.PI * 6) * amplitude))
+      shakeFrameRef.current = requestAnimationFrame(step)
+    }
+    shakeFrameRef.current = requestAnimationFrame(step)
+  }
+
+  /* M20 #3：文本域自增高（96–240px），只改行高不改受控值。 */
+  function autoGrowTextarea(element) {
+    if (!element || !element.style) return
+    try {
+      element.style.height = 'auto'
+      const next = Math.max(V2_CAPTURE_TEXT_MIN_HEIGHT, Math.min(V2_CAPTURE_TEXT_MAX_HEIGHT, element.scrollHeight))
+      element.style.height = next + 'px'
+      setTextHeight(next)
+    } catch (inner) {
+      /* ignore */
+    }
+  }
+
+  useEffect(function cleanupNoticeTimers() {
+    return function cleanup() {
+      try {
+        if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+      } catch (inner) {
+        /* ignore */
+      }
+      try {
+        if (shakeFrameRef.current) cancelAnimationFrame(shakeFrameRef.current)
+      } catch (inner) {
+        /* ignore */
+      }
+    }
+  }, [])
 
   function updateClassify(patch) {
     setClassify(function merge(current) {
@@ -11243,7 +11345,14 @@ function V2HostCaptureDialog(props) {
 
   async function submit() {
     const value = String(text || '').trim()
-    if (!value || saving) return
+    if (saving) return
+    if (v2CaptureTextTooLong(text)) {
+      /* M20 #3：超限先抖动 + 气泡，不把 409 留给 Host */
+      shakeOnce()
+      showNotice('error', v2CaptureLimitMessage())
+      return
+    }
+    if (!value) return
     setSaving(true)
     setError('')
     try {
@@ -11285,11 +11394,12 @@ function V2HostCaptureDialog(props) {
     }
     if (event.shiftKey) return
     if (String(text || '').length > 30) {
-      // 长内容 Enter 不会立即保存：给一次轻量反馈，说明 Shift+Enter 换行 / Ctrl+Enter 立即保存
+      // 长内容 Enter 不会立即保存：给 3 秒气泡，说明 Shift+Enter 换行 / Ctrl+Enter 立即保存
       setHintPulse(true)
+      showNotice('info', '内容较长：Shift+Enter 换行，Ctrl/⌘+Enter 立即保存')
       setTimeout(function stopPulse() {
         setHintPulse(false)
-      }, 1600)
+      }, V2_CAPTURE_NOTICE_MS)
       return
     }
     event.preventDefault()
@@ -11542,6 +11652,7 @@ function V2HostCaptureDialog(props) {
           display: 'flex',
           flexDirection: 'column',
           gap: 10,
+          transform: shakeOffset ? 'translateX(' + shakeOffset + 'px)' : 'none',
         },
       },
       h(
@@ -11644,10 +11755,14 @@ function V2HostCaptureDialog(props) {
         placeholder: target === 'task' ? '记一条任务，Enter 保存；Shift+Enter 换行' : '随手记点什么，Enter 保存（长文用 Shift+Enter 换行，Ctrl+Enter 立即保存）',
         onChange: function onChange(event) {
           setText(event.target.value)
+          autoGrowTextarea(event.target)
         },
         onKeyDown: onKeyDown,
         style: v2InputStyle({
-          minHeight: 96,
+          height: textHeight ? textHeight + 'px' : V2_CAPTURE_TEXT_MIN_HEIGHT,
+          minHeight: V2_CAPTURE_TEXT_MIN_HEIGHT,
+          maxHeight: V2_CAPTURE_TEXT_MAX_HEIGHT,
+          overflowY: 'auto',
           marginTop: 2,
           padding: '9px 11px',
           border: '1px solid ' + V2.line,
@@ -11659,6 +11774,39 @@ function V2HostCaptureDialog(props) {
         }),
       }),
       error ? h('div', { style: { fontSize: v2fs(11), color: V2.danger, lineHeight: '17px' } }, error) : null,
+      notice
+        ? h(
+          'div',
+          {
+            role: 'status',
+            'aria-live': 'polite',
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 9px',
+              borderRadius: 8,
+              fontSize: v2fs(11),
+              lineHeight: '16px',
+              color: notice.kind === 'error' ? V2.danger : V2.text,
+              background: notice.kind === 'error' ? 'rgba(255,138,138,0.12)' : 'rgba(110,168,254,0.12)',
+              border: '1px solid ' + (notice.kind === 'error' ? 'rgba(255,138,138,0.35)' : 'rgba(110,168,254,0.35)'),
+            },
+          },
+          h(V2Icon, { name: notice.kind === 'error' ? 'flag' : 'bell', size: 12 }),
+          notice.message,
+        )
+        : null,
+      v2CaptureLengthHint(text)
+        ? h('div', {
+          style: {
+            fontSize: v2fs(11),
+            lineHeight: '16px',
+            color: v2CaptureTextTooLong(text) ? V2.danger : V2.faint,
+            textAlign: 'right',
+          },
+        }, v2CaptureLengthHint(text))
+        : null,
       draftRestored && !error
         ? h('div', { style: { fontSize: v2fs(11), color: V2.faint, lineHeight: '16px' } }, '已恢复上次未发送的草稿')
         : null,
@@ -11940,7 +12088,7 @@ function V2DatePicker(props) {
   )
 }
 
-/* ---- 20-tasks.js (5203 lines) ---- */
+/* ---- 20-tasks.js (5246 lines) ---- */
 /* ═══════════════════════ M6 · V2 任务 Tab ═══════════════════════ */
 
 const V2_PRIORITY_ITEMS = [
@@ -12677,6 +12825,7 @@ function TaskTabV2(props) {
   const [panes, setPanes] = useState(v2ReadTaskPanes)
   const inputRef = useRef(null)
   const detailRef = useRef(null)
+  const panesHostRef = useRef(null)
   const stateRef = useRef(state)
   const panesRef = useRef(panes)
   /* 同步 mutation 锁：state.busy 是异步的，跨事件/跨 await 不可靠 */
@@ -14346,6 +14495,48 @@ function TaskTabV2(props) {
     savePanes(Object.assign({}, panesRef.current, { listCollapsed: !panesRef.current.listCollapsed }))
   }
 
+  /* M20 #14：列表栏宽度上限 = 三栏容器宽度的 50%（同时不越过 V2_PANE_MAIN_MAX、不跌破 MIN）。 */
+  function paneContainerWidth() {
+    const host = panesHostRef.current
+    if (!host || !host.getBoundingClientRect) return 0
+    try {
+      return host.getBoundingClientRect().width || 0
+    } catch (error) {
+      return 0
+    }
+  }
+
+  function paneMaxWidth(kind, containerWidth) {
+    if (kind !== 'main') return kind === 'list' ? V2_PANE_LIST_MAX : V2_PANE_DETAIL_MAX
+    const measured = Number(containerWidth)
+    if (!Number.isFinite(measured) || measured <= 0) return V2_PANE_MAIN_MAX
+    return Math.max(V2_PANE_MAIN_MIN, Math.min(V2_PANE_MAIN_MAX, Math.floor(measured / 2)))
+  }
+
+  /* 窗口变小后，已保存的宽度可能已经超过 50%，这里收敛一次并写回。 */
+  function clampPanesToContainer() {
+    const width = paneContainerWidth()
+    if (!width) return
+    const max = paneMaxWidth('main', width)
+    const current = panesRef.current
+    const measured = Number(current.main)
+    const nextMain = Number.isFinite(measured) ? Math.min(measured, max) : max
+    /* 即使只是存储值与上限不一致也要写回，避免下次打开又超限 */
+    if (nextMain === current.main) return
+    savePanes(Object.assign({}, current, { main: nextMain }))
+  }
+
+  useEffect(function clampPanesOnResize() {
+    clampPanesToContainer()
+    function onResize() {
+      clampPanesToContainer()
+    }
+    window.addEventListener('resize', onResize)
+    return function cleanup() {
+      window.removeEventListener('resize', onResize)
+    }
+  }, [])
+
   function beginPaneDrag(kind, event) {
     if (!event) return
     if (event.preventDefault) event.preventDefault()
@@ -14354,7 +14545,7 @@ function TaskTabV2(props) {
     const current = panesRef.current
     const startWidth = kind === 'list' ? current.list : kind === 'main' ? current.main : current.detail
     const min = kind === 'list' ? V2_PANE_LIST_MIN : kind === 'main' ? V2_PANE_MAIN_MIN : V2_PANE_DETAIL_MIN
-    const max = kind === 'list' ? V2_PANE_LIST_MAX : kind === 'main' ? V2_PANE_MAIN_MAX : V2_PANE_DETAIL_MAX
+    const max = paneMaxWidth(kind, paneContainerWidth())
     let next = Object.assign({}, current)
     function onMove(moveEvent) {
       const delta = kind === 'detail' ? startX - moveEvent.clientX : moveEvent.clientX - startX
@@ -16780,7 +16971,7 @@ function TaskTabV2(props) {
 
   return h(
     'div',
-    { style: { flex: '1 1 auto', display: 'flex', minHeight: 0, minWidth: 0, overflow: 'hidden' } },
+    { ref: panesHostRef, style: { flex: '1 1 auto', display: 'flex', minHeight: 0, minWidth: 0, overflow: 'hidden' } },
     renderLeft(),
     narrow || panes.listCollapsed ? null : renderSplitter('list'),
     renderMain(),
@@ -17144,7 +17335,7 @@ function v2MatchFilterDef(task, filter) {
   return conditions.every(function every(condition) { return v2MatchFilterCondition(task, condition) })
 }
 
-/* ---- 30-calendar.js (4411 lines) ---- */
+/* ---- 30-calendar.js (4570 lines) ---- */
 /* ═══════════════════════ M6 · 日历 Tab（V2） ═══════════════════════ */
 /* 说明：本文件由 scripts/build-v2.mjs 内联到 client.js 的 V2-MODULES 区段，
    与 00-core.js / 10-shell.js / 20-tasks.js 共用同一 factory 作用域。
@@ -17213,6 +17404,9 @@ const CAL2_ACCENT = '#6ea8fe'
 const CAL2_BAR_SORT_DEFS = [
   { id: 'date', label: '日期' },
   { id: 'priority', label: '优先级' },
+  { id: 'title', label: '标题' },
+  { id: 'tag', label: '标签' },
+  { id: 'modified', label: '修改时间' },
   { id: 'created', label: '创建时间' },
   { id: 'custom', label: '自定义' },
 ]
@@ -17375,6 +17569,12 @@ function cal2TaskListId(task) {
   return task.listId || task.list_id || ''
 }
 
+/* 分组字段兼容读取（M20 #18：弹窗里可改分组） */
+function cal2TaskGroupId(task) {
+  if (!task) return ''
+  return task.groupId || task.group_id || ''
+}
+
 function cal2TaskDayKey(task) {
   const startParts = cal2IsoToParts(cal2TaskStartIso(task))
   if (startParts) return startParts.dateKey
@@ -17496,7 +17696,7 @@ function cal2Settle(promise) {
 }
 
 function cal2ReadPrefs() {
-  const prefs = { view: 'week', anchor: '' }
+  const prefs = { view: 'week', anchor: '', selectedTaskId: '' }
   try {
     const settingsView = v2ReadSettings().calendarView
     if (settingsView === 'month' || settingsView === 'week' || settingsView === 'day') prefs.view = settingsView
@@ -17510,15 +17710,26 @@ function cal2ReadPrefs() {
     if (!parsed || typeof parsed !== 'object') return prefs
     if (parsed.view === 'month' || parsed.view === 'week' || parsed.view === 'day') prefs.view = parsed.view
     if (cal2IsDateKey(parsed.anchor)) prefs.anchor = parsed.anchor
+    /* M20 #4：记住最后打开的任务弹窗，切回日历页签时恢复 */
+    if (typeof parsed.selectedTaskId === 'string' && /^tsk_/.test(parsed.selectedTaskId)) {
+      prefs.selectedTaskId = parsed.selectedTaskId
+    }
   } catch (error) {
     /* localStorage 不可用时使用默认值 */
   }
   return prefs
 }
 
-function cal2WritePrefs(view, anchor) {
+function cal2WritePrefs(view, anchor, selectedTaskId) {
   try {
-    window.localStorage.setItem(CAL2_STATE_KEY, JSON.stringify({ view: view, anchor: anchor }))
+    window.localStorage.setItem(
+      CAL2_STATE_KEY,
+      JSON.stringify({
+        view: view,
+        anchor: anchor,
+        selectedTaskId: typeof selectedTaskId === 'string' && selectedTaskId ? selectedTaskId : '',
+      }),
+    )
   } catch (error) {
     /* 忽略 */
   }
@@ -17701,6 +17912,8 @@ function Cal2TaskModal(props) {
   const isNew = props.isNew === true
   const lists = Array.isArray(props.lists) ? props.lists : []
   const tags = Array.isArray(props.tags) ? props.tags : []
+  /* M20 #18：分组下拉按所选清单联动（数据来自日历页已有的 groupsByList） */
+  const groupsByList = props.groupsByList && typeof props.groupsByList === 'object' ? props.groupsByList : {}
 
   const [form, setForm] = useState(function initialForm() {
     const source = task || {}
@@ -17745,6 +17958,8 @@ function Cal2TaskModal(props) {
       endHm: endParts ? cal2MinToHmInput(endParts.minutes) : '10:00',
       priority: source.priority || 'none',
       listId: cal2TaskListId(source),
+      groupId: cal2TaskGroupId(source),
+      dueDate: cal2TaskDueDate(source) || '',
       /* projectId 不在弹窗中展示，保留原值以便 PATCH 时不被清空（新建为 null） */
       projectId: source.projectId || '',
       notes: source.notes || '',
@@ -17793,6 +18008,10 @@ function Cal2TaskModal(props) {
       title: title,
       priority: form.priority || 'none',
       listId: form.listId || null,
+      groupId: form.groupId || null,
+      /* 截止日期只改 dueDate；同时清掉 dueAt，避免两个字段互斥报错 */
+      dueDate: form.dueDate || null,
+      dueAt: null,
       /* projectId 沿用原任务值（弹窗不展示该字段，保持原样） */
       projectId: form.projectId || null,
       notes: String(form.notes || '').trim() || null,
@@ -17849,6 +18068,13 @@ function Cal2TaskModal(props) {
   const listOptions = [h('option', { key: 'none', value: '' }, '收集箱')].concat(
     lists.map(function renderList(list) {
       return h('option', { key: list.id, value: list.id }, list.name || '未命名清单')
+    }),
+  )
+  /* M20 #18：分组下拉跟随所选清单；清单变化时清空分组 */
+  const listGroups = Array.isArray(groupsByList[form.listId || '']) ? groupsByList[form.listId || ''] : []
+  const groupOptions = [h('option', { key: 'none', value: '' }, '不分组')].concat(
+    listGroups.map(function renderGroup(group) {
+      return h('option', { key: group.id, value: group.id }, group.name || '未命名分组')
     }),
   )
   const priorityOptions = CAL2_PRIORITY_OPTIONS.map(function renderPriority(option) {
@@ -18006,14 +18232,17 @@ function Cal2TaskModal(props) {
           h('div', { key: 'dateRow', style: { display: 'flex', gap: 10, alignItems: 'flex-end' } }, [
             h('div', { key: 'date', style: { flex: '1 1 auto' } }, [
               cal2FieldLabel('日期'),
-              h('input', {
-                type: 'date',
-                value: form.day,
-                onChange: function onDay(event) {
-                  update({ day: event.currentTarget.value })
-                },
-                style: cal2FieldStyle(),
-              }),
+              /* M20 #8：与任务页签/设置共用 V2DatePicker，不再用原生日期输入 */
+              h('div', { style: { display: 'flex' } },
+                h(V2DatePicker, {
+                  value: form.day,
+                  width: '100%',
+                  title: '更改任务日期',
+                  onChange: function onDay(dayKey) {
+                    update({ day: dayKey })
+                  },
+                }),
+              ),
             ]),
             h(
               'label',
@@ -18093,11 +18322,68 @@ function Cal2TaskModal(props) {
                 {
                   value: form.listId || '',
                   onChange: function onList(event) {
-                    update({ listId: event.currentTarget.value })
+                    update({ listId: event.currentTarget.value, groupId: '' })
                   },
                   style: cal2FieldStyle({ cursor: 'pointer' }),
                 },
                 listOptions,
+              ),
+            ]),
+          ]),
+          h('div', { key: 'metaRow2', style: { display: 'flex', gap: 10 } }, [
+            h('div', { key: 'due', style: { flex: '1 1 auto' } }, [
+              cal2FieldLabel('截止日期'),
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } }, [
+                h(V2DatePicker, {
+                  key: 'due-picker',
+                  value: form.dueDate || '',
+                  width: '100%',
+                  title: '设置截止日期',
+                  placeholder: '不设置',
+                  onChange: function onDue(dayKey) {
+                    update({ dueDate: dayKey })
+                  },
+                }),
+                form.dueDate
+                  ? h('button', {
+                      key: 'due-clear',
+                      type: 'button',
+                      title: '清除截止日期',
+                      onClick: function clearDue() {
+                        update({ dueDate: '' })
+                      },
+                      style: {
+                        width: 28,
+                        height: 32,
+                        flex: '0 0 auto',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: V2_T.surface.input,
+                        border: '1px solid ' + V2_T.border.subtle,
+                        borderRadius: V2_T.radius.sm,
+                        color: V2_T.text.secondary,
+                        fontFamily: COLORS.fontFamily,
+                        fontSize: v2fs(13),
+                        cursor: 'pointer',
+                      },
+                    }, '×')
+                  : null,
+              ]),
+            ]),
+            h('div', { key: 'group', style: { flex: '1 1 auto' } }, [
+              cal2FieldLabel('分组'),
+              h(
+                'select',
+                {
+                  value: form.groupId || '',
+                  disabled: !form.listId,
+                  onChange: function onGroup(event) {
+                    update({ groupId: event.currentTarget.value })
+                  },
+                  style: cal2FieldStyle({ cursor: form.listId ? 'pointer' : 'not-allowed', opacity: form.listId ? 1 : 0.6 }),
+                },
+                groupOptions,
               ),
             ]),
           ]),
@@ -18305,7 +18591,7 @@ function CalendarTabV2(props) {
   const [listFilter, setListFilter] = useState('all')
   const [barSort, setBarSort] = useState(function initialBarSort() {
     const stored = cal2ReadPanePrefs().barSort
-    return stored === 'priority' || stored === 'created' || stored === 'custom' ? stored : 'date'
+    return stored === 'priority' || stored === 'title' || stored === 'tag' || stored === 'modified' || stored === 'created' || stored === 'custom' ? stored : 'date'
   })
   const [barGroupBy, setBarGroupBy] = useState(function initialBarGroupBy() {
     return cal2ReadPanePrefs().barGroupBy === 'group' ? 'group' : 'list'
@@ -18331,6 +18617,8 @@ function CalendarTabV2(props) {
   })
 
   const loadSeqRef = useRef(0)
+  const restoredSelectionRef = useRef(false)
+  const restorePendingRef = useRef(true)
   const dragTaskRef = useRef({ id: null, task: null })
   const activeDragCleanupRef = useRef(null)
   const draftCleanupRef = useRef(null)
@@ -18602,6 +18890,23 @@ function CalendarTabV2(props) {
     setCalendarTasks(calendarNext)
     setSidebarTasks(sidebarNext)
     setLists(listsNext)
+    /* M20 #4：恢复上次打开的任务弹窗（任务已被删除时静默忽略；已开着弹窗就不覆盖） */
+    if (!restoredSelectionRef.current) {
+      restoredSelectionRef.current = true
+      restorePendingRef.current = false
+      if (prefs.selectedTaskId) {
+        const restored = calendarNext
+          .concat(sidebarNext)
+          .filter(function match(task) {
+            return task && task.id === prefs.selectedTaskId
+          })[0]
+        if (restored) {
+          setEditing(function keepCurrent(current) {
+            return current ? current : { isNew: false, task: restored, defaultDate: '' }
+          })
+        }
+      }
+    }
     setLoading(false)
     if (!calendarResult.ok && !tasksResult.ok) {
       setLoadError(calendarResult.error ? errorText(calendarResult.error) : '无法连接 LifeOS Host')
@@ -18671,8 +18976,14 @@ function CalendarTabV2(props) {
   }, [view, anchor, reloadTick])
 
   useEffect(function persistPrefs() {
-    cal2WritePrefs(view, anchor)
-  }, [view, anchor])
+    /* M20 #4：首屏恢复完成前不要用空值覆盖已保存的任务 id，否则刷新就打不开上次的弹窗 */
+    const selectedId = restorePendingRef.current
+      ? cal2ReadPrefs().selectedTaskId
+      : editing && editing.task
+        ? editing.task.id
+        : ''
+    cal2WritePrefs(view, anchor, selectedId)
+  }, [view, anchor, editing])
 
   useEffect(function resetTransient() {
     setInline(null)
@@ -20901,6 +21212,41 @@ function CalendarTabV2(props) {
     return barCompareByDate(a, b)
   }
 
+  function barCompareByTitle(a, b) {
+    return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
+  }
+
+  /* 标签排序：取任务第一个标签名（多标签按名称排序后取首个）；无标签排到末尾。 */
+  function barTagName(task) {
+    const tags = Array.isArray(task.tags) ? task.tags : []
+    const names = tags
+      .map(function nameOf(tag) {
+        return tag && typeof tag === 'object' ? String(tag.name || tag.title || '') : String(tag || '')
+      })
+      .filter(Boolean)
+      .sort(function byName(x, y) { return x.localeCompare(y, 'zh-CN') })
+    return names[0] || ''
+  }
+
+  function barCompareByTag(a, b) {
+    const tagA = barTagName(a)
+    const tagB = barTagName(b)
+    if (tagA !== tagB) {
+      if (!tagA) return 1
+      if (!tagB) return -1
+      return tagA.localeCompare(tagB, 'zh-CN')
+    }
+    return barCompareByDate(a, b)
+  }
+
+  /* 修改时间：最近改过的排在前面。 */
+  function barCompareByModified(a, b) {
+    const updatedA = String(a.updatedAt || a.updated_at || '')
+    const updatedB = String(b.updatedAt || b.updated_at || '')
+    if (updatedA !== updatedB) return updatedA > updatedB ? -1 : 1
+    return barCompareByDate(a, b)
+  }
+
   function barCompareByCreated(a, b) {
     const createdA = String(a.createdAt || a.created_at || '')
     const createdB = String(b.createdAt || b.created_at || '')
@@ -20927,6 +21273,9 @@ function CalendarTabV2(props) {
   function barSortTasks(items) {
     const sorted = (items || []).slice()
     if (barSort === 'priority') sorted.sort(barCompareByPriority)
+    else if (barSort === 'title') sorted.sort(barCompareByTitle)
+    else if (barSort === 'tag') sorted.sort(barCompareByTag)
+    else if (barSort === 'modified') sorted.sort(barCompareByModified)
     else if (barSort === 'created') sorted.sort(barCompareByCreated)
     else if (barSort === 'custom') sorted.sort(barCompareByCustom)
     else sorted.sort(barCompareByDate)
@@ -21545,6 +21894,7 @@ function CalendarTabV2(props) {
             isNew: editing.isNew === true,
             defaultDate: editing.defaultDate || '',
             lists: lists,
+            groupsByList: groupsByList,
             tags: tags,
             onClose: function closeModal() {
               setEditing(null)
@@ -21556,7 +21906,7 @@ function CalendarTabV2(props) {
   )
 }
 
-/* ---- 40-habits.js (4844 lines) ---- */
+/* ---- 40-habits.js (4845 lines) ---- */
 /* ═══════════════════════ M6 · V2 习惯 Tab ═══════════════════════
  * 入口：HabitTabV2({ runtime, narrow })
  * 数据源：GET /habits、GET /habits/stats、GET /habits/:id/checkins、GET /habits/month
@@ -23198,16 +23548,17 @@ function HabitEditorModal(props) {
             { style: { flex: '1 1 0', minWidth: 0 } },
             field(
               '开始日期',
-              h('input', {
-                type: 'date',
-                value: form.startDate || '',
-                onChange: function onChange(event) {
-                  props.onChange({ startDate: event.target.value })
-                },
-                onFocus: focusField,
-                onBlur: blurField,
-                style: habitInputStyle(),
-              }),
+              /* M20 #8：与任务页签共用 V2DatePicker，不再用原生日期输入 */
+              h('div', { style: { display: 'flex' } },
+                h(V2DatePicker, {
+                  value: form.startDate || '',
+                  width: '100%',
+                  title: '更改开始日期',
+                  onChange: function onPick(dayKey) {
+                    props.onChange({ startDate: dayKey })
+                  },
+                }),
+              ),
             ),
           ),
           h(

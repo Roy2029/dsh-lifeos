@@ -852,6 +852,33 @@ const V2_CAPTURE_WHEN_ITEMS = [
   { id: 'next_week', label: '下周' },
 ]
 
+/* M20 #3：快速记录的文本边界。上限与 Host 的 MAX_CAPTURE_CHARS（contract.js）一致，
+   客户端提前拦下，避免 Host 返回 409 之后才告诉用户。 */
+const V2_CAPTURE_MAX_CHARS = 20000
+const V2_CAPTURE_WARN_RATIO = 0.9
+const V2_CAPTURE_NOTICE_MS = 3000
+const V2_CAPTURE_TEXT_MIN_HEIGHT = 96
+const V2_CAPTURE_TEXT_MAX_HEIGHT = 240
+
+/** 文本是否超过上限（超限时禁止提交）。 */
+function v2CaptureTextTooLong(text) {
+  return String(text || '').length > V2_CAPTURE_MAX_CHARS
+}
+
+/** 计数提示：临近或超过上限时只显示用量，拆分建议放在气泡里，避免重复。 */
+function v2CaptureLengthHint(text) {
+  const length = String(text || '').length
+  if (length >= Math.floor(V2_CAPTURE_MAX_CHARS * V2_CAPTURE_WARN_RATIO)) {
+    return '已用 ' + length + ' / ' + V2_CAPTURE_MAX_CHARS + ' 字'
+  }
+  return ''
+}
+
+/** 超限时的行动建议（气泡用）。 */
+function v2CaptureLimitMessage() {
+  return '超过 ' + V2_CAPTURE_MAX_CHARS + ' 字上限，请拆成多条，或先存为随记'
+}
+
 /** 归一化分类选择：只保留已知字段，避免脏 localStorage 影响提交。 */
 function v2CaptureNormalizeClassify(value) {
   const source = value && typeof value === 'object' ? value : {}
@@ -1045,6 +1072,12 @@ function V2HostCaptureDialog(props) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [hintPulse, setHintPulse] = useState(false)
+  const [shakeOffset, setShakeOffset] = useState(0)
+  const [notice, setNotice] = useState(null)
+  /* M20 #3：把实测高度存进 state，重渲染后仍保持自增高结果 */
+  const [textHeight, setTextHeight] = useState(0)
+  const noticeTimerRef = useRef(null)
+  const shakeFrameRef = useRef(0)
   const [draftRestored] = useState(!!(initialDraft && initialDraft.text.trim()))
   const [classify, setClassify] = useState(function initClassify() {
     const remembered = v2ReadCaptureClassify()
@@ -1068,7 +1101,10 @@ function V2HostCaptureDialog(props) {
   useEffect(function focusOnOpen() {
     const timer = setTimeout(function focusLater() {
       try {
-        if (textareaRef.current) textareaRef.current.focus()
+        if (textareaRef.current) {
+          textareaRef.current.focus()
+          autoGrowTextarea(textareaRef.current)
+        }
       } catch (inner) {
         /* ignore */
       }
@@ -1090,6 +1126,72 @@ function V2HostCaptureDialog(props) {
       /* ignore */
     }
   }
+
+  /* M20 #3：3 秒气泡（role=status）——长文按 Enter、超限都走这里，不新增常驻文案。 */
+  function showNotice(kind, message) {
+    setNotice({ kind: kind, message: message })
+    try {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    } catch (inner) {
+      /* ignore */
+    }
+    noticeTimerRef.current = setTimeout(function clearNotice() {
+      noticeTimerRef.current = null
+      setNotice(null)
+    }, V2_CAPTURE_NOTICE_MS)
+  }
+
+  /* M20 #3：抖动用 rAF 衰减位移，不引入 CSS keyframes（客户端没有全局样式表）。 */
+  function shakeOnce() {
+    const startedAt = Date.now()
+    const duration = 320
+    try {
+      if (shakeFrameRef.current) cancelAnimationFrame(shakeFrameRef.current)
+    } catch (inner) {
+      /* ignore */
+    }
+    function step() {
+      const elapsed = Date.now() - startedAt
+      if (elapsed >= duration) {
+        shakeFrameRef.current = 0
+        setShakeOffset(0)
+        return
+      }
+      const progress = elapsed / duration
+      const amplitude = 6 * (1 - progress)
+      setShakeOffset(Math.round(Math.sin(progress * Math.PI * 6) * amplitude))
+      shakeFrameRef.current = requestAnimationFrame(step)
+    }
+    shakeFrameRef.current = requestAnimationFrame(step)
+  }
+
+  /* M20 #3：文本域自增高（96–240px），只改行高不改受控值。 */
+  function autoGrowTextarea(element) {
+    if (!element || !element.style) return
+    try {
+      element.style.height = 'auto'
+      const next = Math.max(V2_CAPTURE_TEXT_MIN_HEIGHT, Math.min(V2_CAPTURE_TEXT_MAX_HEIGHT, element.scrollHeight))
+      element.style.height = next + 'px'
+      setTextHeight(next)
+    } catch (inner) {
+      /* ignore */
+    }
+  }
+
+  useEffect(function cleanupNoticeTimers() {
+    return function cleanup() {
+      try {
+        if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+      } catch (inner) {
+        /* ignore */
+      }
+      try {
+        if (shakeFrameRef.current) cancelAnimationFrame(shakeFrameRef.current)
+      } catch (inner) {
+        /* ignore */
+      }
+    }
+  }, [])
 
   function updateClassify(patch) {
     setClassify(function merge(current) {
@@ -1169,7 +1271,14 @@ function V2HostCaptureDialog(props) {
 
   async function submit() {
     const value = String(text || '').trim()
-    if (!value || saving) return
+    if (saving) return
+    if (v2CaptureTextTooLong(text)) {
+      /* M20 #3：超限先抖动 + 气泡，不把 409 留给 Host */
+      shakeOnce()
+      showNotice('error', v2CaptureLimitMessage())
+      return
+    }
+    if (!value) return
     setSaving(true)
     setError('')
     try {
@@ -1211,11 +1320,12 @@ function V2HostCaptureDialog(props) {
     }
     if (event.shiftKey) return
     if (String(text || '').length > 30) {
-      // 长内容 Enter 不会立即保存：给一次轻量反馈，说明 Shift+Enter 换行 / Ctrl+Enter 立即保存
+      // 长内容 Enter 不会立即保存：给 3 秒气泡，说明 Shift+Enter 换行 / Ctrl+Enter 立即保存
       setHintPulse(true)
+      showNotice('info', '内容较长：Shift+Enter 换行，Ctrl/⌘+Enter 立即保存')
       setTimeout(function stopPulse() {
         setHintPulse(false)
-      }, 1600)
+      }, V2_CAPTURE_NOTICE_MS)
       return
     }
     event.preventDefault()
@@ -1468,6 +1578,7 @@ function V2HostCaptureDialog(props) {
           display: 'flex',
           flexDirection: 'column',
           gap: 10,
+          transform: shakeOffset ? 'translateX(' + shakeOffset + 'px)' : 'none',
         },
       },
       h(
@@ -1570,10 +1681,14 @@ function V2HostCaptureDialog(props) {
         placeholder: target === 'task' ? '记一条任务，Enter 保存；Shift+Enter 换行' : '随手记点什么，Enter 保存（长文用 Shift+Enter 换行，Ctrl+Enter 立即保存）',
         onChange: function onChange(event) {
           setText(event.target.value)
+          autoGrowTextarea(event.target)
         },
         onKeyDown: onKeyDown,
         style: v2InputStyle({
-          minHeight: 96,
+          height: textHeight ? textHeight + 'px' : V2_CAPTURE_TEXT_MIN_HEIGHT,
+          minHeight: V2_CAPTURE_TEXT_MIN_HEIGHT,
+          maxHeight: V2_CAPTURE_TEXT_MAX_HEIGHT,
+          overflowY: 'auto',
           marginTop: 2,
           padding: '9px 11px',
           border: '1px solid ' + V2.line,
@@ -1585,6 +1700,39 @@ function V2HostCaptureDialog(props) {
         }),
       }),
       error ? h('div', { style: { fontSize: v2fs(11), color: V2.danger, lineHeight: '17px' } }, error) : null,
+      notice
+        ? h(
+          'div',
+          {
+            role: 'status',
+            'aria-live': 'polite',
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 9px',
+              borderRadius: 8,
+              fontSize: v2fs(11),
+              lineHeight: '16px',
+              color: notice.kind === 'error' ? V2.danger : V2.text,
+              background: notice.kind === 'error' ? 'rgba(255,138,138,0.12)' : 'rgba(110,168,254,0.12)',
+              border: '1px solid ' + (notice.kind === 'error' ? 'rgba(255,138,138,0.35)' : 'rgba(110,168,254,0.35)'),
+            },
+          },
+          h(V2Icon, { name: notice.kind === 'error' ? 'flag' : 'bell', size: 12 }),
+          notice.message,
+        )
+        : null,
+      v2CaptureLengthHint(text)
+        ? h('div', {
+          style: {
+            fontSize: v2fs(11),
+            lineHeight: '16px',
+            color: v2CaptureTextTooLong(text) ? V2.danger : V2.faint,
+            textAlign: 'right',
+          },
+        }, v2CaptureLengthHint(text))
+        : null,
       draftRestored && !error
         ? h('div', { style: { fontSize: v2fs(11), color: V2.faint, lineHeight: '16px' } }, '已恢复上次未发送的草稿')
         : null,
