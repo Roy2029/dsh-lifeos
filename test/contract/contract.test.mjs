@@ -224,6 +224,27 @@ test('validateUpdateTask：白名单/状态不可改/时间互斥', () => {
   assert.equal(validateUpdateTask({ title: 'x', scheduledDate: '2026-11-13', scheduledStartAt: '2026-11-13T10:00:00.000Z' }).ok, false);
 });
 
+/* M20：清单/分组归属可随创建与更新一起提交（快速记录分类、日历弹窗） */
+test('M20 任务契约接受 listId/groupId（创建与更新）', () => {
+  const listId = 'lst_01M78CRMDYHSJ7VSPH81DRT2WR';
+  const groupId = 'grp_01M78CRMDYHSJ7VSPH81DRT2WR';
+  const created = validateCreateTask({ title: '买牛奶', listId, groupId });
+  assert.equal(created.ok, true);
+  assert.equal(created.value.listId, listId);
+  assert.equal(created.value.groupId, groupId);
+  const bare = validateCreateTask({ title: '买牛奶' });
+  assert.equal(bare.value.listId, null);
+  assert.equal(bare.value.groupId, null);
+  assert.equal(validateCreateTask({ title: 'x', listId: 'bad' }).ok, false);
+  assert.equal(validateCreateTask({ title: 'x', groupId: 'lst_01M78CRMDYHSJ7VSPH81DRT2WR' }).ok, false);
+
+  const patched = validateUpdateTask({ listId, groupId: null });
+  assert.equal(patched.ok, true);
+  assert.equal(patched.value.listId, listId);
+  assert.equal(patched.value.groupId, null);
+  assert.equal(validateUpdateTask({ listId: 'grp_bad' }).ok, false);
+});
+
 test('validateReschedule：至少一项/端点时间合法', () => {
   assert.equal(validateReschedule({}).ok, false);
   const ok1 = validateReschedule({ scheduledDate: '2026-11-20' });

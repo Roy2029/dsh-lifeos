@@ -734,6 +734,7 @@ function TaskTabV2(props) {
   const [panes, setPanes] = useState(v2ReadTaskPanes)
   const inputRef = useRef(null)
   const detailRef = useRef(null)
+  const panesHostRef = useRef(null)
   const stateRef = useRef(state)
   const panesRef = useRef(panes)
   /* 同步 mutation 锁：state.busy 是异步的，跨事件/跨 await 不可靠 */
@@ -2403,6 +2404,48 @@ function TaskTabV2(props) {
     savePanes(Object.assign({}, panesRef.current, { listCollapsed: !panesRef.current.listCollapsed }))
   }
 
+  /* M20 #14：列表栏宽度上限 = 三栏容器宽度的 50%（同时不越过 V2_PANE_MAIN_MAX、不跌破 MIN）。 */
+  function paneContainerWidth() {
+    const host = panesHostRef.current
+    if (!host || !host.getBoundingClientRect) return 0
+    try {
+      return host.getBoundingClientRect().width || 0
+    } catch (error) {
+      return 0
+    }
+  }
+
+  function paneMaxWidth(kind, containerWidth) {
+    if (kind !== 'main') return kind === 'list' ? V2_PANE_LIST_MAX : V2_PANE_DETAIL_MAX
+    const measured = Number(containerWidth)
+    if (!Number.isFinite(measured) || measured <= 0) return V2_PANE_MAIN_MAX
+    return Math.max(V2_PANE_MAIN_MIN, Math.min(V2_PANE_MAIN_MAX, Math.floor(measured / 2)))
+  }
+
+  /* 窗口变小后，已保存的宽度可能已经超过 50%，这里收敛一次并写回。 */
+  function clampPanesToContainer() {
+    const width = paneContainerWidth()
+    if (!width) return
+    const max = paneMaxWidth('main', width)
+    const current = panesRef.current
+    const measured = Number(current.main)
+    const nextMain = Number.isFinite(measured) ? Math.min(measured, max) : max
+    /* 即使只是存储值与上限不一致也要写回，避免下次打开又超限 */
+    if (nextMain === current.main) return
+    savePanes(Object.assign({}, current, { main: nextMain }))
+  }
+
+  useEffect(function clampPanesOnResize() {
+    clampPanesToContainer()
+    function onResize() {
+      clampPanesToContainer()
+    }
+    window.addEventListener('resize', onResize)
+    return function cleanup() {
+      window.removeEventListener('resize', onResize)
+    }
+  }, [])
+
   function beginPaneDrag(kind, event) {
     if (!event) return
     if (event.preventDefault) event.preventDefault()
@@ -2411,7 +2454,7 @@ function TaskTabV2(props) {
     const current = panesRef.current
     const startWidth = kind === 'list' ? current.list : kind === 'main' ? current.main : current.detail
     const min = kind === 'list' ? V2_PANE_LIST_MIN : kind === 'main' ? V2_PANE_MAIN_MIN : V2_PANE_DETAIL_MIN
-    const max = kind === 'list' ? V2_PANE_LIST_MAX : kind === 'main' ? V2_PANE_MAIN_MAX : V2_PANE_DETAIL_MAX
+    const max = paneMaxWidth(kind, paneContainerWidth())
     let next = Object.assign({}, current)
     function onMove(moveEvent) {
       const delta = kind === 'detail' ? startX - moveEvent.clientX : moveEvent.clientX - startX
@@ -4837,7 +4880,7 @@ function TaskTabV2(props) {
 
   return h(
     'div',
-    { style: { flex: '1 1 auto', display: 'flex', minHeight: 0, minWidth: 0, overflow: 'hidden' } },
+    { ref: panesHostRef, style: { flex: '1 1 auto', display: 'flex', minHeight: 0, minWidth: 0, overflow: 'hidden' } },
     renderLeft(),
     narrow || panes.listCollapsed ? null : renderSplitter('list'),
     renderMain(),

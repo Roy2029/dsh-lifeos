@@ -227,3 +227,31 @@ test('M0 兼容：/query、/capture、/health 仍工作且版本头 0.2', async 
   assert.equal(q.status, 200);
   assert.equal(q.json().value.items.length, 1);
 });
+
+/* M20：快速记录/日历弹窗把清单与分组一起提交（服务层已支持，契约此前会 422） */
+test('POST /tasks 与 PATCH /tasks/:id 接受 listId/groupId', async () => {
+  const { routes, service } = makeRoutes()
+  const list = await service.createList({ name: '生活' })
+  const group = await service.createGroup(list.list.id, { name: '采购' })
+  const created = await createViaApi(routes, {
+    title: '买牛奶',
+    listId: list.list.id,
+    groupId: group.group.id,
+  })
+  assert.equal(created.status, 200)
+  const task = created.json().value.task
+  assert.equal(task.listId, list.list.id)
+  assert.equal(task.groupId, group.group.id)
+
+  const moved = await callWrite(routes, {
+    method: 'PATCH',
+    url: `/api/lifeos/tasks/${task.id}`,
+    body: { listId: list.list.id, groupId: null },
+    rev: task.rev,
+  })
+  assert.equal(moved.status, 200)
+  assert.equal(moved.json().value.task.groupId, null)
+
+  const bad = await createViaApi(routes, { title: 'x', listId: 'grp_wrong' })
+  assert.equal(bad.status, 422)
+})

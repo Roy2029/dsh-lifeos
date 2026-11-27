@@ -66,6 +66,9 @@ const CAL2_ACCENT = '#6ea8fe'
 const CAL2_BAR_SORT_DEFS = [
   { id: 'date', label: '日期' },
   { id: 'priority', label: '优先级' },
+  { id: 'title', label: '标题' },
+  { id: 'tag', label: '标签' },
+  { id: 'modified', label: '修改时间' },
   { id: 'created', label: '创建时间' },
   { id: 'custom', label: '自定义' },
 ]
@@ -228,6 +231,12 @@ function cal2TaskListId(task) {
   return task.listId || task.list_id || ''
 }
 
+/* 分组字段兼容读取（M20 #18：弹窗里可改分组） */
+function cal2TaskGroupId(task) {
+  if (!task) return ''
+  return task.groupId || task.group_id || ''
+}
+
 function cal2TaskDayKey(task) {
   const startParts = cal2IsoToParts(cal2TaskStartIso(task))
   if (startParts) return startParts.dateKey
@@ -349,7 +358,7 @@ function cal2Settle(promise) {
 }
 
 function cal2ReadPrefs() {
-  const prefs = { view: 'week', anchor: '' }
+  const prefs = { view: 'week', anchor: '', selectedTaskId: '' }
   try {
     const settingsView = v2ReadSettings().calendarView
     if (settingsView === 'month' || settingsView === 'week' || settingsView === 'day') prefs.view = settingsView
@@ -363,15 +372,26 @@ function cal2ReadPrefs() {
     if (!parsed || typeof parsed !== 'object') return prefs
     if (parsed.view === 'month' || parsed.view === 'week' || parsed.view === 'day') prefs.view = parsed.view
     if (cal2IsDateKey(parsed.anchor)) prefs.anchor = parsed.anchor
+    /* M20 #4：记住最后打开的任务弹窗，切回日历页签时恢复 */
+    if (typeof parsed.selectedTaskId === 'string' && /^tsk_/.test(parsed.selectedTaskId)) {
+      prefs.selectedTaskId = parsed.selectedTaskId
+    }
   } catch (error) {
     /* localStorage 不可用时使用默认值 */
   }
   return prefs
 }
 
-function cal2WritePrefs(view, anchor) {
+function cal2WritePrefs(view, anchor, selectedTaskId) {
   try {
-    window.localStorage.setItem(CAL2_STATE_KEY, JSON.stringify({ view: view, anchor: anchor }))
+    window.localStorage.setItem(
+      CAL2_STATE_KEY,
+      JSON.stringify({
+        view: view,
+        anchor: anchor,
+        selectedTaskId: typeof selectedTaskId === 'string' && selectedTaskId ? selectedTaskId : '',
+      }),
+    )
   } catch (error) {
     /* 忽略 */
   }
@@ -554,6 +574,8 @@ function Cal2TaskModal(props) {
   const isNew = props.isNew === true
   const lists = Array.isArray(props.lists) ? props.lists : []
   const tags = Array.isArray(props.tags) ? props.tags : []
+  /* M20 #18：分组下拉按所选清单联动（数据来自日历页已有的 groupsByList） */
+  const groupsByList = props.groupsByList && typeof props.groupsByList === 'object' ? props.groupsByList : {}
 
   const [form, setForm] = useState(function initialForm() {
     const source = task || {}
@@ -598,6 +620,8 @@ function Cal2TaskModal(props) {
       endHm: endParts ? cal2MinToHmInput(endParts.minutes) : '10:00',
       priority: source.priority || 'none',
       listId: cal2TaskListId(source),
+      groupId: cal2TaskGroupId(source),
+      dueDate: cal2TaskDueDate(source) || '',
       /* projectId 不在弹窗中展示，保留原值以便 PATCH 时不被清空（新建为 null） */
       projectId: source.projectId || '',
       notes: source.notes || '',
@@ -646,6 +670,10 @@ function Cal2TaskModal(props) {
       title: title,
       priority: form.priority || 'none',
       listId: form.listId || null,
+      groupId: form.groupId || null,
+      /* 截止日期只改 dueDate；同时清掉 dueAt，避免两个字段互斥报错 */
+      dueDate: form.dueDate || null,
+      dueAt: null,
       /* projectId 沿用原任务值（弹窗不展示该字段，保持原样） */
       projectId: form.projectId || null,
       notes: String(form.notes || '').trim() || null,
@@ -702,6 +730,13 @@ function Cal2TaskModal(props) {
   const listOptions = [h('option', { key: 'none', value: '' }, '收集箱')].concat(
     lists.map(function renderList(list) {
       return h('option', { key: list.id, value: list.id }, list.name || '未命名清单')
+    }),
+  )
+  /* M20 #18：分组下拉跟随所选清单；清单变化时清空分组 */
+  const listGroups = Array.isArray(groupsByList[form.listId || '']) ? groupsByList[form.listId || ''] : []
+  const groupOptions = [h('option', { key: 'none', value: '' }, '不分组')].concat(
+    listGroups.map(function renderGroup(group) {
+      return h('option', { key: group.id, value: group.id }, group.name || '未命名分组')
     }),
   )
   const priorityOptions = CAL2_PRIORITY_OPTIONS.map(function renderPriority(option) {
@@ -859,14 +894,17 @@ function Cal2TaskModal(props) {
           h('div', { key: 'dateRow', style: { display: 'flex', gap: 10, alignItems: 'flex-end' } }, [
             h('div', { key: 'date', style: { flex: '1 1 auto' } }, [
               cal2FieldLabel('日期'),
-              h('input', {
-                type: 'date',
-                value: form.day,
-                onChange: function onDay(event) {
-                  update({ day: event.currentTarget.value })
-                },
-                style: cal2FieldStyle(),
-              }),
+              /* M20 #8：与任务页签/设置共用 V2DatePicker，不再用原生日期输入 */
+              h('div', { style: { display: 'flex' } },
+                h(V2DatePicker, {
+                  value: form.day,
+                  width: '100%',
+                  title: '更改任务日期',
+                  onChange: function onDay(dayKey) {
+                    update({ day: dayKey })
+                  },
+                }),
+              ),
             ]),
             h(
               'label',
@@ -946,11 +984,68 @@ function Cal2TaskModal(props) {
                 {
                   value: form.listId || '',
                   onChange: function onList(event) {
-                    update({ listId: event.currentTarget.value })
+                    update({ listId: event.currentTarget.value, groupId: '' })
                   },
                   style: cal2FieldStyle({ cursor: 'pointer' }),
                 },
                 listOptions,
+              ),
+            ]),
+          ]),
+          h('div', { key: 'metaRow2', style: { display: 'flex', gap: 10 } }, [
+            h('div', { key: 'due', style: { flex: '1 1 auto' } }, [
+              cal2FieldLabel('截止日期'),
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } }, [
+                h(V2DatePicker, {
+                  key: 'due-picker',
+                  value: form.dueDate || '',
+                  width: '100%',
+                  title: '设置截止日期',
+                  placeholder: '不设置',
+                  onChange: function onDue(dayKey) {
+                    update({ dueDate: dayKey })
+                  },
+                }),
+                form.dueDate
+                  ? h('button', {
+                      key: 'due-clear',
+                      type: 'button',
+                      title: '清除截止日期',
+                      onClick: function clearDue() {
+                        update({ dueDate: '' })
+                      },
+                      style: {
+                        width: 28,
+                        height: 32,
+                        flex: '0 0 auto',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: V2_T.surface.input,
+                        border: '1px solid ' + V2_T.border.subtle,
+                        borderRadius: V2_T.radius.sm,
+                        color: V2_T.text.secondary,
+                        fontFamily: COLORS.fontFamily,
+                        fontSize: v2fs(13),
+                        cursor: 'pointer',
+                      },
+                    }, '×')
+                  : null,
+              ]),
+            ]),
+            h('div', { key: 'group', style: { flex: '1 1 auto' } }, [
+              cal2FieldLabel('分组'),
+              h(
+                'select',
+                {
+                  value: form.groupId || '',
+                  disabled: !form.listId,
+                  onChange: function onGroup(event) {
+                    update({ groupId: event.currentTarget.value })
+                  },
+                  style: cal2FieldStyle({ cursor: form.listId ? 'pointer' : 'not-allowed', opacity: form.listId ? 1 : 0.6 }),
+                },
+                groupOptions,
               ),
             ]),
           ]),
@@ -1158,7 +1253,7 @@ function CalendarTabV2(props) {
   const [listFilter, setListFilter] = useState('all')
   const [barSort, setBarSort] = useState(function initialBarSort() {
     const stored = cal2ReadPanePrefs().barSort
-    return stored === 'priority' || stored === 'created' || stored === 'custom' ? stored : 'date'
+    return stored === 'priority' || stored === 'title' || stored === 'tag' || stored === 'modified' || stored === 'created' || stored === 'custom' ? stored : 'date'
   })
   const [barGroupBy, setBarGroupBy] = useState(function initialBarGroupBy() {
     return cal2ReadPanePrefs().barGroupBy === 'group' ? 'group' : 'list'
@@ -1184,6 +1279,8 @@ function CalendarTabV2(props) {
   })
 
   const loadSeqRef = useRef(0)
+  const restoredSelectionRef = useRef(false)
+  const restorePendingRef = useRef(true)
   const dragTaskRef = useRef({ id: null, task: null })
   const activeDragCleanupRef = useRef(null)
   const draftCleanupRef = useRef(null)
@@ -1455,6 +1552,23 @@ function CalendarTabV2(props) {
     setCalendarTasks(calendarNext)
     setSidebarTasks(sidebarNext)
     setLists(listsNext)
+    /* M20 #4：恢复上次打开的任务弹窗（任务已被删除时静默忽略；已开着弹窗就不覆盖） */
+    if (!restoredSelectionRef.current) {
+      restoredSelectionRef.current = true
+      restorePendingRef.current = false
+      if (prefs.selectedTaskId) {
+        const restored = calendarNext
+          .concat(sidebarNext)
+          .filter(function match(task) {
+            return task && task.id === prefs.selectedTaskId
+          })[0]
+        if (restored) {
+          setEditing(function keepCurrent(current) {
+            return current ? current : { isNew: false, task: restored, defaultDate: '' }
+          })
+        }
+      }
+    }
     setLoading(false)
     if (!calendarResult.ok && !tasksResult.ok) {
       setLoadError(calendarResult.error ? errorText(calendarResult.error) : '无法连接 LifeOS Host')
@@ -1524,8 +1638,14 @@ function CalendarTabV2(props) {
   }, [view, anchor, reloadTick])
 
   useEffect(function persistPrefs() {
-    cal2WritePrefs(view, anchor)
-  }, [view, anchor])
+    /* M20 #4：首屏恢复完成前不要用空值覆盖已保存的任务 id，否则刷新就打不开上次的弹窗 */
+    const selectedId = restorePendingRef.current
+      ? cal2ReadPrefs().selectedTaskId
+      : editing && editing.task
+        ? editing.task.id
+        : ''
+    cal2WritePrefs(view, anchor, selectedId)
+  }, [view, anchor, editing])
 
   useEffect(function resetTransient() {
     setInline(null)
@@ -3754,6 +3874,41 @@ function CalendarTabV2(props) {
     return barCompareByDate(a, b)
   }
 
+  function barCompareByTitle(a, b) {
+    return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
+  }
+
+  /* 标签排序：取任务第一个标签名（多标签按名称排序后取首个）；无标签排到末尾。 */
+  function barTagName(task) {
+    const tags = Array.isArray(task.tags) ? task.tags : []
+    const names = tags
+      .map(function nameOf(tag) {
+        return tag && typeof tag === 'object' ? String(tag.name || tag.title || '') : String(tag || '')
+      })
+      .filter(Boolean)
+      .sort(function byName(x, y) { return x.localeCompare(y, 'zh-CN') })
+    return names[0] || ''
+  }
+
+  function barCompareByTag(a, b) {
+    const tagA = barTagName(a)
+    const tagB = barTagName(b)
+    if (tagA !== tagB) {
+      if (!tagA) return 1
+      if (!tagB) return -1
+      return tagA.localeCompare(tagB, 'zh-CN')
+    }
+    return barCompareByDate(a, b)
+  }
+
+  /* 修改时间：最近改过的排在前面。 */
+  function barCompareByModified(a, b) {
+    const updatedA = String(a.updatedAt || a.updated_at || '')
+    const updatedB = String(b.updatedAt || b.updated_at || '')
+    if (updatedA !== updatedB) return updatedA > updatedB ? -1 : 1
+    return barCompareByDate(a, b)
+  }
+
   function barCompareByCreated(a, b) {
     const createdA = String(a.createdAt || a.created_at || '')
     const createdB = String(b.createdAt || b.created_at || '')
@@ -3780,6 +3935,9 @@ function CalendarTabV2(props) {
   function barSortTasks(items) {
     const sorted = (items || []).slice()
     if (barSort === 'priority') sorted.sort(barCompareByPriority)
+    else if (barSort === 'title') sorted.sort(barCompareByTitle)
+    else if (barSort === 'tag') sorted.sort(barCompareByTag)
+    else if (barSort === 'modified') sorted.sort(barCompareByModified)
     else if (barSort === 'created') sorted.sort(barCompareByCreated)
     else if (barSort === 'custom') sorted.sort(barCompareByCustom)
     else sorted.sort(barCompareByDate)
@@ -4398,6 +4556,7 @@ function CalendarTabV2(props) {
             isNew: editing.isNew === true,
             defaultDate: editing.defaultDate || '',
             lists: lists,
+            groupsByList: groupsByList,
             tags: tags,
             onClose: function closeModal() {
               setEditing(null)
