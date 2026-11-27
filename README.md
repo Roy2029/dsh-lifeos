@@ -2,8 +2,7 @@
 
 LifeOS 是一个运行在 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）里的个人管理插件。它不是又一个待办 App，而是把 **任务 / 日历 / 习惯 / 笔记** 放进同一个工作区，并让 DSH 里的 Agent 能直接读写这些数据，帮你完成「记录 → 整理 → 安排 → 复盘」的闭环。
 
-> 当前版本：`v0.3.0`。四个 Tab 可用。
-> 当前里程碑、测试数与最近验收 commit 以 [STATUS.md](STATUS.md) 为准；用户反馈进度见 [docs/product/backlog.md](docs/product/backlog.md)。
+> 当前版本：`v0.3.0`。四个 Tab 可用；已完成的里程碑与已知限制见文末。
 
 ![LifeOS 四个 Tab](docs/images/preview.png)
 
@@ -165,20 +164,12 @@ LifeOS 是一个运行在 [DeepSeek Harness](https://github.com/deepseek-ai)（D
 - 备份：退出 DSH 后复制上述目录即可；恢复同理。笔记目录可直接用任意 Markdown 工具迁移。
 - 卸载插件不会删除业务数据；如需彻底清理，手动删除上述目录。
 
-## 开发
+## 本地构建
 
 ```powershell
-cd D:\Tools\dsh-lifeos
-
 # 修改 client-v2/*.js 后重新内联到 client.js
 node scripts/build-v2.mjs
 node --check client.js
-
-# 全量测试（Node 22+ 自动发现 test/**/*.test.mjs）
-npm test
-
-# 代码 + 文档一致性门禁（版本、测试数、backlog、计划、链接）
-npm run check
 ```
 
 ### 项目结构
@@ -191,33 +182,19 @@ src/
   application/             服务层（任务/笔记/习惯/项目/目标/整理）
   runtime/                 HTTP 路由、SSE、调度、诊断
   agent/                   Agent 工具与预设
-  client-shared/contract.js  Host 与测试共享的契约
+  client-shared/           客户端共享模块（契约校验、Markdown 渲染）
 client-v2/                 客户端源码（无构建框架，lazy-CJS）
   00-core / 05-tokens / 10-shell / 15-datepicker
   20-tasks / 30-calendar / 40-habits / 50-notes / 60-settings
-client.js                  构建产物：内联了 client-v2 模块
+client.js                  构建产物：内联了 client-v2 模块与 client-shared 共享块
 scripts/build-v2.mjs       内联脚本
-scripts/spec-sync.mjs      文档/状态一致性检查器
-docs/plans/                里程碑计划（完成的移入 archive/）
-docs/product/backlog.md    用户反馈与交付证据
-STATUS.md                  当前版本、里程碑、测试数、最近验收
-test/                      单元与集成测试
+docs/images/preview.png    界面预览图
 locale/                    中英文插件元信息
 ```
 
 - Host 使用 DSH 的 kv 存储（JSON），无 SQL/索引；写入采用 journal-first 逻辑事务。
-- 客户端是单文件 lazy-CJS bundle（`window.__ModuleLoader__.load`），无 JSX、无打包器；`client-v2/*.js` 按顺序内联进 `client.js`，因此新增模块后要重新 build。
+- 客户端是单文件 lazy-CJS bundle（`window.__ModuleLoader__.load`），无 JSX、无打包器；`client-v2/*.js` 与 `src/client-shared/markdown.js` 按顺序内联进 `client.js`，因此新增模块后要重新 build。
 - 所有 UI 改动需要**重启 DSH**（或至少刷新页面）以确保加载新的客户端 bundle；Host 改动需要重启 Host 进程。
-
-## 文档与状态管理
-
-这个仓库使用 `spec-sync` 约定，避免代码和文档再次漂移：
-
-- `STATUS.md` 是当前状态的唯一来源（版本、里程碑、阶段、测试数、最近验收）。
-- `docs/product/backlog.md` 一行一条用户可见项，`done` 必须带证据。
-- `docs/plans/` 只放进行中的计划，完成的移入 `docs/plans/archive/`。
-- README 只写稳定用法，不写「当前测试数」「下一阶段」这类易变事实。
-- 提交前运行 `npm run check`；它会在版本/测试数/backlog/计划/本地链接不一致时失败。
 
 ## 已知限制
 

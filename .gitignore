@@ -29,3 +29,15 @@ desktop.ini
 # 笔记数据（若有人把笔记目录放在仓库内）
 notes/
 Notes/
+
+# 开发资产（仅本地保留，不入库）
+/test/
+/docs/plans/
+/docs/product/
+/docs/development/
+/AGENTS.md
+/STATUS.md
+/.spec-sync.json
+/scripts/spec-sync.mjs
+/docs/images/*.png
+!/docs/images/preview.png
