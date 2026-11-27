@@ -5,7 +5,7 @@
 > `partial` rows require a note describing what remains.
 
 Source: 2026-11-24 product feedback (32 items). Decisions are reflected in the
-Status/Milestone columns and in `docs/plans/M20-PLAN.md`; this table is the
+Status/Milestone columns and in `docs/plans/archive/M20-PLAN.md`; this table is the
 repository's only tracking copy.
 
 | ID | Item | Status | Milestone | Evidence |
